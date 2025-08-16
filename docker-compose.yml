@@ -1,0 +1,14 @@
+services:
+  silkjam:
+    build: .
+    image: silkjam:latest
+    container_name: silkjam
+    ports:
+      - 8500:8000
+    volumes:
+      - silkjam_data:/app/data
+    environment:
+      - ENV=dev
+    restart: unless-stopped
+volumes:
+  silkjam_data:
