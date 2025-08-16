@@ -1,3 +1,4 @@
+name: silkjam
 services:
   silkjam:
     build: .
@@ -6,9 +7,9 @@ services:
     ports:
       - 8500:8000
     volumes:
-      - silkjam_data:/app/data
+      - data:/app/data
     environment:
       - ENV=dev
     restart: unless-stopped
 volumes:
-  silkjam_data:
+  data:

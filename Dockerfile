@@ -8,6 +8,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     curl \
     bash \
+    xz-utils \
+    procps \
     openjdk-21-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
@@ -25,5 +27,6 @@ COPY ./src .
 # Expose the FastAPI port
 EXPOSE 8000
 
-# # Run with Uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run with Uvicorn
+ENV PYTHONUNBUFFERED=1
+CMD ["uvicorn", "orchestrator.server_webapp:app", "--host", "0.0.0.0", "--port", "8000"]
