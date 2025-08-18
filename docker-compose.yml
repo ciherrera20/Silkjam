@@ -6,6 +6,7 @@ services:
     container_name: silkjam
     ports:
       - 8500:8000
+      - 25565:25565
     volumes:
       - data:/app/data
     environment:

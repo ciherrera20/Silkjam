@@ -26,6 +26,7 @@ COPY ./src .
 
 # Expose the FastAPI port
 EXPOSE 8000
+EXPOSE 25565
 
 # Run with Uvicorn
 ENV PYTHONUNBUFFERED=1
