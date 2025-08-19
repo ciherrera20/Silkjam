@@ -37,3 +37,5 @@ minecraft-orchestrator/
 
 # TODOs
 - Add core API to start/stop servers
+- Figure out how to create a less privileged user per server and start the server processes as that user
+- Investigate why, when bug causes multiple java processes to open, only 1 gets cleaned up by AsyncExitStack

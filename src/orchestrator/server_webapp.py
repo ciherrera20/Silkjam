@@ -1,12 +1,15 @@
 import asyncio
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import RedirectResponse
-from orchestrator.mc import MCOrchestrator
 import sys
 from contextlib import asynccontextmanager
 import logging
 
-# Configure logging first
+#
+# Project imports
+#
+from orchestrator.mc import MCOrchestrator
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s",
@@ -16,13 +19,28 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    orch = MCOrchestrator("/app/data")
-    for name, server in orch.servers.items():
-        logger.info(f"Found server {name} on port {server.port}")
-    task = asyncio.create_task(orch.run_servers())
-    yield
-    task.cancel()
-    await task
+    # Pseudocode:
+    async with MCOrchestrator("/app/data") as orch:
+        task = asyncio.create_task(orch.run_servers())
+        try:
+            yield
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    # orch = MCOrchestrator("/app/data")
+    # for name, server in orch.servers.items():
+    #     logger.info(f"Found server {name} on port {server.port}")
+    # task = asyncio.create_task(orch.run_servers())
+    # yield
+    # task.cancel()
+    # try:
+    #     await task
+    # except asyncio.CancelledError:
+    #     pass
 
 app = FastAPI(
     title="Silkjam",
