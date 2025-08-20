@@ -5,20 +5,16 @@ import logging
 import jproperties
 from pathlib import Path
 from enum import IntEnum
-from collections import namedtuple
-from contextlib import asynccontextmanager, suppress, AbstractAsyncContextManager, AsyncExitStack, ExitStack
+from contextlib import asynccontextmanager, suppress, AbstractAsyncContextManager, AsyncExitStack
 
 #
 # Project imports
 #
-import orchestrator.protocol_utils as pu
+import mc_protocol_utils as mcpu
 
 logger = logging.getLogger(__name__)
 
 MINECRAFT_PORT = 25565
-SERVER_VERSION = "1.21.4"
-
-MCVersion = namedtuple("MCVersion", ["name", "protocol"])
 
 class MCServer(AbstractAsyncContextManager):
     class Status(IntEnum):
@@ -28,11 +24,10 @@ class MCServer(AbstractAsyncContextManager):
     def __init__(self, root: Path, listing: dict):
         self.root = root
         self.name = listing["name"]
-        self.version = MCVersion(**listing["version"])
+        self.version = mcpu.MCVersion(**listing["version"])
         self.status = MCServer.Status.SLEEPING
 
-        # Create sync and async context manager stacks to handle all entering and exiting
-        self._cm_stack = ExitStack()
+        # Create context manager stack to handle all entering and exiting
         self._acm_stack = AsyncExitStack()
 
         self.properties = None
@@ -43,8 +38,9 @@ class MCServer(AbstractAsyncContextManager):
         self._status_change = asyncio.Event()
 
     async def __aenter__(self):
-        # Enter sync and async context manager stacks
-        self._cm_stack.__enter__()
+        logger.debug(f"{self.name}: Entering")
+
+        # Enter context manager stack
         await self._acm_stack.__aenter__()
 
         # Open and read server properties
@@ -68,10 +64,10 @@ class MCServer(AbstractAsyncContextManager):
         return self
 
     async def __aexit__(self, *args):
-        # Exit all open sync and async context managers
+        # Exit all open context managers
         await self._acm_stack.__aexit__(*args)
-        self._cm_stack.__exit__(*args)
-        logger.debug(f"{self.name}: Exited stacks")
+
+        logger.debug(f"{self.name}: Exiting")
         return False
 
     async def serve_forever(self):
@@ -164,8 +160,75 @@ class MCServer(AbstractAsyncContextManager):
 
     async def handle_client(self, reader, writer):
         try:
-            # Forward traffic to actual minecraft server
             backend_reader, backend_writer = await asyncio.open_connection("0.0.0.0", self.port)
+        except ConnectionRefusedError as err:
+            try:
+                # Read some initial data to figure out if the packet is legacy ping
+                data = await reader.read(1024)
+                _, legacy_ping = mcpu.decode_legacy_ping(data)
+                logger.debug(f"{self.name}: Received legacy ping: {legacy_ping}")
+                legacy_ping_response = mcpu.encode_legacy_ping_response(self.version.protocol, self.version.name, self.motd, self.max_players)
+                writer.write(legacy_ping_response)
+                await writer.drain()
+            except mcpu.MCProtocolError as err:
+                # Handle modern handshake
+                try:
+                    apacket_gen = mcpu.read_packets_forever(reader, initial_data=data)
+
+                    # Read initial handshake packet
+                    _, handshake = mcpu.decode_handshake_packet(await anext(apacket_gen))
+                    logger.debug(f"{self.name}: Received handshake: {handshake}")
+                    if handshake["next_state"] == 1:
+                        # Read request packet and respond
+                        mcpu.decode_request_packet(await anext(apacket_gen))
+
+                        # Status request
+                        handshake_response_paylod = {
+                            "version": {
+                                "name": self.version.name,
+                                "protocol": self.version.protocol
+                            },
+                            "players": {
+                                "max": self.max_players,
+                                "online": 0,
+                                "sample": []
+                            },	
+                            "description": {
+                                "text": self.motd
+                            }
+                        }
+                        if self.icon is not None:
+                            handshake_response_paylod["favicon"] = self.icon
+                        handshake_response = mcpu.encode_json_packet(0, handshake_response_paylod)
+                        writer.write(handshake_response)
+                        await writer.drain()
+
+                        # Read ping packet and respond with pong
+                        _, pingpong_payload = mcpu.decode_pingpong_packet(await anext(apacket_gen))
+                        pingpong_packet = mcpu.encode_pingpong_packet(pingpong_payload)
+                        writer.write(pingpong_packet)
+                        await writer.drain()
+                    elif handshake["next_state"] == 2:
+                        # Login attempt
+                        kick_payload = {
+                            "text": "§eServer is waking up, try again in 30s"
+                        }
+                        handshake_response = mcpu.encode_json_packet(0, kick_payload)
+                        writer.write(handshake_response)
+                        await writer.drain()
+                        self.set_running()  # Start actual server process
+                    else:
+                        raise mcpu.MCProtocolError(f"Unknown next state in handshake: {handshake['next_state']}")
+                except mcpu.MCProtocolError as err:
+                    logger.debug(f"{self.name}: Error during handshake: {err}")
+                except ConnectionResetError:
+                    logger.info(f"{self.name}: Client closed connection unexpectedly")
+                except Exception as err:
+                    logger.exception(f"{self.name}: Exception caught while performing handshake: {err}")
+        except Exception as err:
+            logger.exception(f"{self.name}: Exception caught while connecting to backend server: {err}")
+        else:
+            # Forward traffic to actual minecraft server if connection succeeded
             try:
                 async def forward(src_reader, dst_writer):
                     try:
@@ -175,8 +238,6 @@ class MCServer(AbstractAsyncContextManager):
                                 break
                             dst_writer.write(data)
                             await dst_writer.drain()
-                    except Exception:
-                        pass
                     finally:
                         dst_writer.close()
 
@@ -185,82 +246,10 @@ class MCServer(AbstractAsyncContextManager):
                     forward(backend_reader, writer)
                 )
             except Exception as err:
-                logger.exception(f"{self.name}: Proxy error: {err}")
-            finally:
-                writer.close()
-        except ConnectionRefusedError as err:
-            # Read some initial data to figure out if the packet is legacy ping
-            data = await reader.read(1024)
-
-            # Handle legacy pings
-            try:
-                _, legacy_ping = pu.decode_legacy_ping(data)
-                logger.debug(f"{self.name}: Received legacy ping: {legacy_ping}")
-                legacy_ping_response = pu.encode_legacy_ping_response(self.version.protocol, self.version.name, self.motd, self.max_players)
-                writer.write(legacy_ping_response)
-                await writer.drain()
-                writer.close()
-                return
-            except pu.ProtocolError as err:
-                pass
-
-            # Handle modern handshake
-            try:
-                apacket_gen = pu.read_packets_forever(data, reader)
-
-                # Read initial handshake packet
-                _, handshake = pu.decode_handshake_packet(await anext(apacket_gen))
-                logger.debug(f"{self.name}: Received handshake: {handshake}")
-                if handshake["next_state"] == 1:
-                    # Read request packet and respond
-                    pu.decode_request_packet(await anext(apacket_gen))
-
-                    # Status request
-                    handshake_response_paylod = {
-                        "version": {
-                            "name": self.version.name,
-                            "protocol": self.version.protocol
-                        },
-                        "players": {
-                            "max": self.max_players,
-                            "online": 0,
-                            "sample": []
-                        },	
-                        "description": {
-                            "text": self.motd
-                        }
-                    }
-                    if self.icon is not None:
-                        handshake_response_paylod["favicon"] = self.icon
-                    handshake_response = pu.encode_json_packet(0, handshake_response_paylod)
-                    writer.write(handshake_response)
-                    await writer.drain()
-
-                    # Read ping packet and respond with pong
-                    _, ping_payload = pu.decode_ping_packet(await anext(apacket_gen))
-                    pong_packet = pu.encode_pong_packet(ping_payload)
-                    writer.write(pong_packet)
-                    await writer.drain()
-
-                    # Done with status request
-                    writer.close()
-                elif handshake["next_state"] == 2:
-                    # Login attempt
-                    kick_payload = {
-                        "text": "§eServer is waking up, try again in 30s"
-                    }
-                    handshake_response = pu.encode_json_packet(0, kick_payload)
-                    writer.write(handshake_response)
-                    await writer.drain()
-                    writer.close()
-
-                    self.set_running()  # Start actual server process
-                else:
-                    raise pu.ProtocolError(f"Unknown next state in handshake: {handshake['next_state']}")
-            except pu.ProtocolError as err:
-                logger.debug(f"{self.name}: Error during handshake: {err}")
-                writer.close()
-                return
+                logger.exception(f"{self.name}: Exception caught while port forwarding: {err}")
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     @property
     def port(self):

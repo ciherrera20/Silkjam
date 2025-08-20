@@ -2,12 +2,12 @@ import json
 import asyncio
 import logging
 from pathlib import Path
-from contextlib import AbstractAsyncContextManager, AsyncExitStack, ExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 
 #
 # Project imports
 #
-from orchestrator.mcserver import MCServer
+from mc_server import MCServer
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +15,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
     def __init__(self, root: str | Path):
         self.root = Path(root)
 
-        # Create sync and async context manager stacks to handle all entering and exiting
-        self._cm_stack = ExitStack()
+        # Create context manager stack to handle all entering and exiting
         self._acm_stack = AsyncExitStack()
 
         # Server listing
@@ -29,12 +28,13 @@ class MCOrchestrator(AbstractAsyncContextManager):
         self._server_listing_changed = asyncio.Event()  # Notify run_servers whenever the server listing changes
 
     async def __aenter__(self):
-        # Enter sync and async context manager stacks
-        self._cm_stack.__enter__()
+        logger.debug(f"Entering")
+
+        # Enter context manager stack
         await self._acm_stack.__aenter__()
 
         # Open and read server listing file
-        self.server_listing_file = self._cm_stack.enter_context((self.root / "server_listing.json").open("a+"))
+        self.server_listing_file = self._acm_stack.enter_context((self.root / "server_listing.json").open("a+"))
         self.server_listing_file.seek(0)
         try:
             logger.info("Reading server listing")
@@ -59,11 +59,13 @@ class MCOrchestrator(AbstractAsyncContextManager):
 
     async def __aexit__(self, *args):
         # Write server listing file
+        self.server_listing_file.truncate(0)
         json.dump(self.server_listing, self.server_listing_file)
 
-        # Exit all open sync and async context managers
+        # Exit all open context managers
         await self._acm_stack.__aexit__(*args)
-        self._cm_stack.__exit__(*args)
+
+        logger.debug(f"Exiting")
         return False
 
     async def run_servers(self):

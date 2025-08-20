@@ -8,13 +8,14 @@ import logging
 #
 # Project imports
 #
-from orchestrator.mc import MCOrchestrator
+from mc_orchestrator import MCOrchestrator
 
 logging.basicConfig(
     level=logging.DEBUG,
     format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]  # ensure logs go to stdout for Docker
 )
+logging.getLogger('asyncio').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
