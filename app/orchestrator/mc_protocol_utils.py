@@ -2,7 +2,10 @@ import json
 import random
 import struct
 import asyncio
+import logging
 from collections import namedtuple
+
+logger = logging.getLogger(__name__)
 
 ############################################ Minecraft protocol ############################################
 # Documentation at: https://minecraft.wiki/w/Minecraft_Wiki:Protocol_documentation
@@ -18,34 +21,72 @@ class MCProtocolError(ValueError):
         super().__init__(*args, **kwargs)
         self.data = data
 
-async def read_packets_forever(reader: asyncio.StreamReader, initial_data: bytes=b"", timeout: int | None=None):
-    data = initial_data
+VARINT_MAX_LENGTH = 5
+DEFAULT_BUFFER_SIZE = 1 << 16
+MIN_READ_SIZE = 1 << 10
+
+def _allocate_buffer(data, i, j, n, min_buffer_size=DEFAULT_BUFFER_SIZE, min_free_space=MIN_READ_SIZE):
+    # j - i is how much space we still have occupied
+    logger.debug("Buffer of size %s has %s bytes of parsed data, %s bytes of unparsed data, and %s bytes of free space", n, i, j-i, n-j)
+    old_data = data
+    if j - i < n - (n >> 2):  # Less than 1/4 of the buffer will be occupied with unparsed data
+        # Halve buffer, not going below default buffer size
+        n = max(n >> 1, min_buffer_size)
+    elif j - i > n - min_free_space:  # Buffer is completely occupied with unparsed data
+        # Double buffer
+        n <<= 1
+    logger.debug("Allocating new %s byte buffer", n)
+    data = memoryview(bytearray(n))
+    data[:j-i] = old_data[i:j]  # Copy unparsed data
+    j -= i
+    i = 0
+    return data, i, j, n
+
+async def read_packets_forever(reader: asyncio.StreamReader, initial_data: bytes | bytearray | memoryview=b"", timeout: int | None=None):
+    # Allocate buffer
+    #         0    :    i     i     :     j     j   :    n
+    # data = [parsed data] + [unparsed data] + [free space]
+    i = 0                    # Start of unparsed data
+    j = len(initial_data)    # Start of unread data
+    n = DEFAULT_BUFFER_SIZE  # Size of buffer
+    data, i, j, n = _allocate_buffer(initial_data, i, j, n)
+
     packet_length = None
     while True:
-        # Read bytes until the packet's length can be determined
         if packet_length is None:
             try:
-                varint_length, packet_length = decode_varint(data)
+                logger.debug("Attempting to parse %s bytes as VarInt", j-i)
+                _, packet_length = decode_varint(data[i:j])
             except asyncio.IncompleteReadError:
-                try:
-                    data += await asyncio.wait_for(reader.readexactly(1), timeout=timeout)
-                except asyncio.IncompleteReadError as err:
-                    raise ConnectionResetError from err
-                continue
-
-        # Read up until the end of the packet
-        try:
-            if len(data) < varint_length + packet_length:
-                data += await asyncio.wait_for(reader.readexactly(varint_length + packet_length - len(data)), timeout=timeout)
-        except asyncio.IncompleteReadError as err:
-            data += err.partial
-            continue
-
-        # Decode packet and yield it
-        total_length, (packet_id, packet_data) = decode_packet(data)
-        data = data[total_length:]  # Should always yield an empty bytes object
-        packet_length = None
-        yield total_length, (packet_id, packet_data)
+                logger.debug("Could not parse VarInt")
+                if (n - j) < MIN_READ_SIZE:  # Need to allocate a new buffer
+                    data, i, j, n = _allocate_buffer(data, i, j, n)
+                logger.debug("Attempting to read %s bytes from client", n-j)
+                new_data = await asyncio.wait_for(reader.read(n - j), timeout)
+                logger.debug("Read %s bytes", len(new_data))
+                if len(new_data) == 0:
+                    raise ConnectionResetError
+                data[j:j+len(new_data)] = new_data
+                j += len(new_data)
+        else:
+            try:
+                logger.debug("Attempting to parse %s bytes as packet", j-i)
+                total_length, (packet_id, packet_data) = decode_packet(data[i:j])
+            except asyncio.IncompleteReadError:
+                logger.debug("Could not parse packet")
+                if (n - j) < min(MIN_READ_SIZE, packet_length):  # Need to allocate a new buffer
+                    data, i, j, n = _allocate_buffer(data, i, j, n)
+                logger.debug("Attempting to read %s bytes from client", n-j)
+                new_data = await asyncio.wait_for(reader.read(n - j), timeout)
+                logger.debug("Read %s bytes", len(new_data))
+                if len(new_data) == 0:
+                    raise ConnectionResetError
+                data[j:j+len(new_data)] = new_data
+                j += len(new_data)
+            else:
+                i += total_length  # Update start of unparsed bytes
+                packet_length = None
+                yield total_length, (packet_id, packet_data)
 
 ############################################# Decode functions #############################################
 
@@ -57,7 +98,7 @@ def decode_legacy_ping(data: bytes) -> tuple[int, dict]:
         i += 3
         str_length = struct.unpack(">H", data[i:i+2])[0]
         i += 2
-        string = data[i:i+str_length*2].decode("utf-16-be")
+        string = str(data[i:i+str_length*2], "utf-16-be")
         if string != "MC|PingHost":
             raise MCProtocolError(data, f"Expected string \"MC|PingHost\", received \"{string}\"")
         i += str_length*2
@@ -69,7 +110,7 @@ def decode_legacy_ping(data: bytes) -> tuple[int, dict]:
         i += 1
         hostname_length = struct.unpack(">H", data[i:i+2])[0]
         i += 2
-        hostname = data[i:i+hostname_length*2].decode("utf-16-be")
+        hostname = str(data[i:i+hostname_length*2], "utf-16-be")
         i += hostname_length*2
         port = struct.unpack(">I", data[i:i+4])[0]
         i += 4
@@ -86,7 +127,7 @@ def decode_varint(data: bytes) -> tuple[int, int]:
     shift = 0
     i = 0
     while True:
-        if i + 1 > 5:
+        if i + 1 > VARINT_MAX_LENGTH:
             raise MCProtocolError(data, "VarInt is too big")
         if i > len(data) - 1:
             raise asyncio.IncompleteReadError(data, None)
@@ -109,7 +150,7 @@ def decode_string(data: bytes) -> tuple[int, str]:
     varint_length, str_length = decode_varint(data)
     if len(data) < varint_length + str_length:
         raise asyncio.IncompleteReadError(data, str_length + varint_length)
-    return varint_length + str_length, data[varint_length:varint_length + str_length].decode("utf-8")
+    return varint_length + str_length, str(data[varint_length:varint_length + str_length], "utf-8")
 
 def decode_packet(data: bytes) -> tuple[int, tuple[int, bytes]]:
     varint_length, total_packet_length = decode_varint(data)
@@ -117,7 +158,7 @@ def decode_packet(data: bytes) -> tuple[int, tuple[int, bytes]]:
         raise asyncio.IncompleteReadError(data, total_packet_length)
     packet_id_length, packet_id = decode_varint(data[varint_length:])
     packet_data = data[varint_length + packet_id_length : varint_length + total_packet_length]
-    return (varint_length+total_packet_length), (packet_id, packet_data)
+    return (varint_length + total_packet_length), (packet_id, packet_data)
 
 def decode_handshake_packet(packet: tuple[int, tuple[int, bytes]]) -> tuple[int, dict]:
     try:
@@ -184,8 +225,6 @@ def encode_legacy_ping_response(protocol_version: int, mc_version: str, motd: st
     return b"\xff" + struct.pack(">H", min(str_length, 65535)) + string.encode("utf-16-be")
 
 def encode_varint(value: int) -> bytes:
-    # if value > (1 << 31) - 1 or value < ((1 << 31) - (1 << 32)):
-    #     raise ValueError("Number out of range of 4 byte int")
     if value < 0:
         value += 1 << 32
     out = b""

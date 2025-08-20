@@ -2,6 +2,7 @@ import asyncio
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import RedirectResponse
 import sys
+import os
 from contextlib import asynccontextmanager
 import logging
 
@@ -10,9 +11,13 @@ import logging
 #
 from mc_orchestrator import MCOrchestrator
 
+if os.environ.get("DEBUG"):
+    level = logging.DEBUG
+else:
+    level = logging.INFO
 logging.basicConfig(
-    level=logging.DEBUG,
-    format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s",
+    level=level,
+    format="%(levelname)s [%(name)s.%(funcName)s:%(lineno)d] [%(asctime)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]  # ensure logs go to stdout for Docker
 )
 logging.getLogger('asyncio').setLevel(logging.WARNING)
@@ -31,17 +36,6 @@ async def lifespan(app: FastAPI):
                 await task
             except asyncio.CancelledError:
                 pass
-
-    # orch = MCOrchestrator("/app/data")
-    # for name, server in orch.servers.items():
-    #     logger.info(f"Found server {name} on port {server.port}")
-    # task = asyncio.create_task(orch.run_servers())
-    # yield
-    # task.cancel()
-    # try:
-    #     await task
-    # except asyncio.CancelledError:
-    #     pass
 
 app = FastAPI(
     title="Silkjam",

@@ -28,7 +28,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
         self._server_listing_changed = asyncio.Event()  # Notify run_servers whenever the server listing changes
 
     async def __aenter__(self):
-        logger.debug(f"Entering")
+        logger.debug("Entering")
 
         # Enter context manager stack
         await self._acm_stack.__aenter__()
@@ -65,7 +65,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
         # Exit all open context managers
         await self._acm_stack.__aexit__(*args)
 
-        logger.debug(f"Exiting")
+        logger.debug("Exiting")
         return False
 
     async def run_servers(self):
@@ -76,7 +76,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
                 name = entry["name"]
                 server_listing_names.add(name)
                 if name not in self.servers:
-                    logger.info(f"Found server listing entry {name}")
+                    logger.info("Found server listing entry %s", name)
                     mc_server = await self._acm_stack.enter_async_context(MCServer(self.root / name, entry))
                     self.servers[name] = mc_server
                     mc_server_task = asyncio.create_task(mc_server.serve_forever())

@@ -12,6 +12,10 @@ from contextlib import asynccontextmanager, suppress, AbstractAsyncContextManage
 #
 import mc_protocol_utils as mcpu
 
+class PrefixLoggerAdapter(logging.LoggerAdapter):
+    """ A logger adapter that adds a prefix to every message """
+    def process(self, msg: str, kwargs: dict) -> tuple[str, dict]:
+        return (f'[{self.extra["prefix"]}] ' + msg, kwargs)
 logger = logging.getLogger(__name__)
 
 MINECRAFT_PORT = 25565
@@ -37,20 +41,22 @@ class MCServer(AbstractAsyncContextManager):
         self._proxy_server = None
         self._status_change = asyncio.Event()
 
+        self.log = PrefixLoggerAdapter(logger, {"prefix": self.name})
+
     async def __aenter__(self):
-        logger.debug(f"{self.name}: Entering")
+        self.log.debug("Entering")
 
         # Enter context manager stack
         await self._acm_stack.__aenter__()
 
         # Open and read server properties
-        logger.info(f"{self.name}: Reading server properties")
+        self.log.info("Reading server properties")
         self.properties = jproperties.Properties()
         with (self.root / "server.properties").open("r") as f:
             self.properties.load(f.read())
 
         # Open and read icon if it exists
-        logger.info(f"{self.name}: Reading server icon properties")
+        self.log.info("Reading server icon properties")
         icon_path = self.root / "world" / "icon.png"
         if icon_path.exists():
             with icon_path.open("rb") as f:
@@ -67,7 +73,7 @@ class MCServer(AbstractAsyncContextManager):
         # Exit all open context managers
         await self._acm_stack.__aexit__(*args)
 
-        logger.debug(f"{self.name}: Exiting")
+        self.log.debug("Exiting")
         return False
 
     async def serve_forever(self):
@@ -85,7 +91,7 @@ class MCServer(AbstractAsyncContextManager):
                 # Do nothing until the status changes
                 while not self._status_change.is_set():
                     await self._status_change.wait()
-                logger.debug(f"{self.name}: Status change requested")
+                self.log.debug("Status change requested")
                 self._status_change.clear()
         finally:
             # Cancel proxy server task when exiting
@@ -105,58 +111,58 @@ class MCServer(AbstractAsyncContextManager):
             stderr=asyncio.subprocess.PIPE,
             cwd=self.root
         )
-        logger.info(f"{self.name}: Starting minecraft server process with pid {server_proc.pid}")
+        self.log.info("Starting minecraft server process with pid %s", server_proc.pid)
         try:
             yield server_proc
         finally:
-            logger.info(f"{self.name}: Closing minecraft server process")
+            self.log.info("Closing minecraft server process")
             shutdown = server_proc.returncode is not None
             if shutdown:
-                logger.debug(f"{self.name}: Minecraft server process has already exited")
+                self.log.debug("Minecraft server process has already exited")
 
             if not shutdown:
                 with suppress(asyncio.TimeoutError):
                     # Send stop command and wait before progressing to SIGINT
-                    logger.debug(f"{self.name}: Sending stop command to minecraft server process {server_proc.pid}")
+                    self.log.debug("Sending stop command to minecraft server process %s", server_proc.pid)
                     server_proc.stdin.write(b"stop\n")
                     await server_proc.stdin.drain()
                     await asyncio.wait_for(server_proc.wait(), stop_timeout)
                     shutdown = True
-                    logger.debug(f"{self.name}: Minecraft server process exited after stop command")
+                    self.log.debug("Minecraft server process exited after stop command")
 
             if not shutdown:
                 with suppress(asyncio.TimeoutError):
                     # Send SIGINT and wait before progressing to SIGTERM
-                    logger.debug(f"{self.name}: Sending SIGINT to minecraft server process {server_proc.pid}")
+                    self.log.debug("Sending SIGINT to minecraft server process %s", server_proc.pid)
                     server_proc.send_signal(signal.SIGINT)
                     await asyncio.wait_for(server_proc.wait(), sigint_timeout)
                     shutdown = True
-                    logger.debug(f"{self.name}: Minecraft server process exited after SIGINT")
+                    self.log.debug("Minecraft server process exited after SIGINT")
 
             if not shutdown:
                 with suppress(asyncio.TimeoutError):
                     # Send SIGTERM and wait before progressing to SIGKILL
-                    logger.debug(f"{self.name}: Sending SIGTERM to minecraft server process {server_proc.pid}")
+                    self.log.debug("Sending SIGTERM to minecraft server process %s", server_proc.pid)
                     server_proc.send_signal(signal.SIGTERM)
                     await asyncio.wait_for(server_proc.wait(), sigterm_timeout)
                     shutdown = True
-                    logger.debug(f"{self.name}: Minecraft server process exited after SIGTERM")
+                    self.log.debug("Minecraft server process exited after SIGTERM")
 
             if not shutdown:
                 # Send SIGKILL
-                logger.debug(f"{self.name}: Sending SIGKILL to minecraft server process {server_proc.pid}")
+                self.log.debug("Sending SIGKILL to minecraft server process %s", server_proc.pid)
                 server_proc.send_signal(signal.SIGKILL)
-                logger.debug(f"{self.name}: Minecraft server process exited after SIGKILL")
+                self.log.debug("Minecraft server process exited after SIGKILL")
 
     @asynccontextmanager
     async def mc_proxy_server(self):
-        logger.info(f"{self.name}: Starting proxy server on port {MINECRAFT_PORT}")
+        self.log.info("Starting proxy server on port %s", MINECRAFT_PORT)
         proxy_server = await asyncio.start_server(self._handle_client, "0.0.0.0", MINECRAFT_PORT)
         async with proxy_server:
             try:
                 yield proxy_server
             finally:
-                logger.info(f"{self.name}: Closing proxy server")
+                self.log.info("Closing proxy server")
 
     async def _handle_pings(self, reader, writer):
         try:
@@ -166,18 +172,18 @@ class MCServer(AbstractAsyncContextManager):
             try:
                 # Try parsing as a legacy ping
                 _, legacy_ping = mcpu.decode_legacy_ping(data)
-                logger.debug(f"{self.name}: Received legacy ping: {legacy_ping}")
+                self.log.debug("Received legacy ping: %s", legacy_ping)
                 legacy_ping_response = mcpu.encode_legacy_ping_response(self.version.protocol, self.version.name, self.motd, self.max_players)
                 writer.write(legacy_ping_response)
                 await writer.drain()
             except mcpu.MCProtocolError as err:
                 # Handle modern handshake
                 try:
-                    apacket_gen = mcpu.read_packets_forever(reader, initial_data=data)
+                    apacket_gen = mcpu.read_packets_forever(reader, initial_data=data, timeout=30)
 
                     # Read initial handshake packet
                     _, handshake = mcpu.decode_handshake_packet(await anext(apacket_gen))
-                    logger.debug(f"{self.name}: Received handshake: {handshake}")
+                    self.log.debug("Received handshake: %s", handshake)
                     if handshake["next_state"] == 1:
                         # Read request packet and respond
                         mcpu.decode_request_packet(await anext(apacket_gen))
@@ -206,9 +212,8 @@ class MCServer(AbstractAsyncContextManager):
                         # Read ping packet and respond with pong
                         with suppress(asyncio.TimeoutError):
                             _, ping_payload = mcpu.decode_pingpong_packet(await anext(apacket_gen))
-
-                        writer.write(mcpu.encode_pingpong_packet(ping_payload))
-                        await writer.drain()
+                            writer.write(mcpu.encode_pingpong_packet(ping_payload))
+                            await writer.drain()
                     elif handshake["next_state"] == 2:
                         # Login attempt
                         kick_payload = {
@@ -221,11 +226,11 @@ class MCServer(AbstractAsyncContextManager):
                     else:
                         raise mcpu.MCProtocolError(f"Unknown next state in handshake: {handshake['next_state']}")
                 except mcpu.MCProtocolError as err:
-                    logger.debug(f"{self.name}: Error during handshake: {err}")
+                    self.log.debug("Error during handshake: %s", err)
                 except ConnectionResetError:
-                    logger.info(f"{self.name}: Client closed connection unexpectedly")
+                    self.log.info("Client closed connection unexpectedly")
         except Exception as err:
-            logger.exception(f"{self.name}: Exception caught while handling client ping: {err}")
+            self.log.exception("Exception caught while handling client ping: %s", err)
 
     async def _forward_to_backend(self, reader, writer, backend_reader, backend_writer):
         # Forward traffic to actual minecraft server
@@ -246,7 +251,7 @@ class MCServer(AbstractAsyncContextManager):
                 forward(backend_reader, writer)
             )
         except Exception as err:
-            logger.exception(f"{self.name}: Exception caught while forwarding to backend: {err}")
+            self.log.exception("Exception caught while forwarding to backend: %s", err)
         finally:
             backend_writer.close()
             await backend_writer.wait_closed()
@@ -263,7 +268,7 @@ class MCServer(AbstractAsyncContextManager):
                 # Backend server is running, forward packets to it
                 await self._forward_to_backend(reader, writer, backend_reader, backend_writer)
         except Exception as err:
-            logger.exception(f"{self.name}: Exception caught while handling client: {err}")
+            self.log.exception("Exception caught while handling client: %s", err)
         finally:
             writer.close()
             await writer.wait_closed()
@@ -288,12 +293,12 @@ class MCServer(AbstractAsyncContextManager):
 
     def set_sleeping(self):
         if not self.is_sleeping():
-            logger.debug(f"{self.name}: Set sleeping")
+            self.log.debug("Set sleeping")
             self.status = MCServer.Status.SLEEPING
             self._status_change.set()
 
     def set_running(self):
         if not self.is_running():
-            logger.debug(f"{self.name}: Set running")
+            self.log.debug("Set running")
             self.status = MCServer.Status.RUNNING
             self._status_change.set()
