@@ -22,7 +22,7 @@ COPY requirements.txt /
 RUN pip install --no-cache-dir -r /requirements.txt
 
 # Copy in your app
-COPY ./src .
+COPY ./app .
 
 # Expose the FastAPI port
 EXPOSE 8000
@@ -30,4 +30,4 @@ EXPOSE 25565
 
 # Run with Uvicorn
 ENV PYTHONUNBUFFERED=1
-CMD ["uvicorn", "orchestrator.server_webapp:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "--app-dir", "orchestrator", "server_webapp:app", "--host", "0.0.0.0", "--port", "8000"]
