@@ -151,20 +151,20 @@ class MCServer(AbstractAsyncContextManager):
     @asynccontextmanager
     async def mc_proxy_server(self):
         logger.info(f"{self.name}: Starting proxy server on port {MINECRAFT_PORT}")
-        proxy_server = await asyncio.start_server(self.handle_client, "0.0.0.0", MINECRAFT_PORT)
+        proxy_server = await asyncio.start_server(self._handle_client, "0.0.0.0", MINECRAFT_PORT)
         async with proxy_server:
             try:
                 yield proxy_server
             finally:
                 logger.info(f"{self.name}: Closing proxy server")
 
-    async def handle_client(self, reader, writer):
+    async def _handle_pings(self, reader, writer):
         try:
-            backend_reader, backend_writer = await asyncio.open_connection("0.0.0.0", self.port)
-        except ConnectionRefusedError as err:
+            # Read some initial data to figure out if the packet is a legacy ping
+            data = await reader.read(1024)
+
             try:
-                # Read some initial data to figure out if the packet is legacy ping
-                data = await reader.read(1024)
+                # Try parsing as a legacy ping
                 _, legacy_ping = mcpu.decode_legacy_ping(data)
                 logger.debug(f"{self.name}: Received legacy ping: {legacy_ping}")
                 legacy_ping_response = mcpu.encode_legacy_ping_response(self.version.protocol, self.version.name, self.motd, self.max_players)
@@ -204,9 +204,10 @@ class MCServer(AbstractAsyncContextManager):
                         await writer.drain()
 
                         # Read ping packet and respond with pong
-                        _, pingpong_payload = mcpu.decode_pingpong_packet(await anext(apacket_gen))
-                        pingpong_packet = mcpu.encode_pingpong_packet(pingpong_payload)
-                        writer.write(pingpong_packet)
+                        with suppress(asyncio.TimeoutError):
+                            _, ping_payload = mcpu.decode_pingpong_packet(await anext(apacket_gen))
+
+                        writer.write(mcpu.encode_pingpong_packet(ping_payload))
                         await writer.drain()
                     elif handshake["next_state"] == 2:
                         # Login attempt
@@ -223,30 +224,46 @@ class MCServer(AbstractAsyncContextManager):
                     logger.debug(f"{self.name}: Error during handshake: {err}")
                 except ConnectionResetError:
                     logger.info(f"{self.name}: Client closed connection unexpectedly")
-                except Exception as err:
-                    logger.exception(f"{self.name}: Exception caught while performing handshake: {err}")
         except Exception as err:
-            logger.exception(f"{self.name}: Exception caught while connecting to backend server: {err}")
-        else:
-            # Forward traffic to actual minecraft server if connection succeeded
-            try:
-                async def forward(src_reader, dst_writer):
-                    try:
-                        while True:
-                            data = await src_reader.read(4096)
-                            if not data:
-                                break
-                            dst_writer.write(data)
-                            await dst_writer.drain()
-                    finally:
-                        dst_writer.close()
+            logger.exception(f"{self.name}: Exception caught while handling client ping: {err}")
 
-                await asyncio.gather(
-                    forward(reader, backend_writer),
-                    forward(backend_reader, writer)
-                )
-            except Exception as err:
-                logger.exception(f"{self.name}: Exception caught while port forwarding: {err}")
+    async def _forward_to_backend(self, reader, writer, backend_reader, backend_writer):
+        # Forward traffic to actual minecraft server
+        try:
+            async def forward(src_reader, dst_writer):
+                try:
+                    while True:
+                        data = await src_reader.read(4096)
+                        if not data:
+                            break
+                        dst_writer.write(data)
+                        await dst_writer.drain()
+                finally:
+                    dst_writer.close()
+
+            await asyncio.gather(
+                forward(reader, backend_writer),
+                forward(backend_reader, writer)
+            )
+        except Exception as err:
+            logger.exception(f"{self.name}: Exception caught while forwarding to backend: {err}")
+        finally:
+            backend_writer.close()
+            await backend_writer.wait_closed()
+
+    async def _handle_client(self, reader, writer):
+        try:
+            try:
+                # Try connecting to the backend server
+                backend_reader, backend_writer = await asyncio.open_connection("0.0.0.0", self.port)
+            except ConnectionRefusedError as err:
+                # Backend server isn't running, handle the pings here in the proxy
+                await self._handle_pings(reader, writer)
+            else:
+                # Backend server is running, forward packets to it
+                await self._forward_to_backend(reader, writer, backend_reader, backend_writer)
+        except Exception as err:
+            logger.exception(f"{self.name}: Exception caught while handling client: {err}")
         finally:
             writer.close()
             await writer.wait_closed()
