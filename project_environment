@@ -1,8 +1,11 @@
+conda activate silkjam
+
 run() {
     if [ "$1" = "--debug" ]; then
-        ARGS='-e DEBUG=True'
+        ARGS='--build-arg DEBUG=true'
         # echo "Running with DEBUG"
     fi
-    sudo docker compose stop silkjam
-    sudo docker compose up -d --build
+    docker compose stop silkjam
+    docker compose build $ARGS
+    docker compose up -d
 }

@@ -20,7 +20,7 @@ logging.basicConfig(
     format="%(levelname)s [%(name)s.%(funcName)s:%(lineno)d] [%(asctime)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]  # ensure logs go to stdout for Docker
 )
-logging.getLogger('asyncio').setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
@@ -53,6 +53,6 @@ async def websocket_status(websocket: WebSocket, server_id: str):
     await websocket.accept()
     while True:
         # Mock status websocket endpoint
-        status = {'server_id': server_id, 'status': 'running'}
+        status = {"server_id": server_id, "status": "running"}
         await websocket.send_json(status)
         await asyncio.sleep(5)  # optional throttle

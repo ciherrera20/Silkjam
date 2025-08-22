@@ -5,12 +5,12 @@ services:
     image: silkjam:latest
     container_name: silkjam
     ports:
-      - 8500:8000
-      - 25565:25565  # Expose Minecraft port
+      - ${API_PORT:-8000}:8000
+      - ${MINECRAFT_PORT:-25565}:25565  # Expose Minecraft port
     volumes:
       - data:/app/data
     environment:
-      - HOSTNAME=localhost  # 
+      - HOSTNAME=${HOSTNAME:-localhost}  # Domain name
     restart: unless-stopped
 volumes:
   data:

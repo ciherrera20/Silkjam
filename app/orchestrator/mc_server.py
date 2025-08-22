@@ -10,12 +10,9 @@ from contextlib import asynccontextmanager, suppress, AbstractAsyncContextManage
 #
 # Project imports
 #
-import mc_protocol_utils as mcpu
+from mc_protocol_utils import MCVersion
+from utils import PrefixLoggerAdapter, BytesLoggerAdapter
 
-class PrefixLoggerAdapter(logging.LoggerAdapter):
-    """ A logger adapter that adds a prefix to every message """
-    def process(self, msg: str, kwargs: dict) -> tuple[str, dict]:
-        return (f'[{self.extra["prefix"]}] ' + msg, kwargs)
 logger = logging.getLogger(__name__)
 
 MINECRAFT_PORT = 25565
@@ -28,78 +25,89 @@ class MCServer(AbstractAsyncContextManager):
     def __init__(self, root: Path, listing: dict):
         self.root = root
         self.name = listing["name"]
-        self.version = mcpu.MCVersion(**listing["version"])
+        self.version = MCVersion(**listing["version"])
+        self.subdomain = listing["subdomain"]
         self.status = MCServer.Status.SLEEPING
-
-        # Create context manager stack to handle all entering and exiting
-        self._acm_stack = AsyncExitStack()
+        self._acm_stack = None
 
         self.properties = None
         self.icon = None
 
         self.server_proc = None
-        self._proxy_server = None
         self._status_change = asyncio.Event()
 
-        self.log = PrefixLoggerAdapter(logger, {"prefix": self.name})
+        self.log = PrefixLoggerAdapter(logger, self.name)
 
     async def __aenter__(self):
-        self.log.debug("Entering")
+        if self._acm_stack is None:
+            self.log.debug("Entering server")
+            self._acm_stack = AsyncExitStack()
 
-        # Enter context manager stack
-        await self._acm_stack.__aenter__()
+            # Enter context manager stack
+            await self._acm_stack.__aenter__()
 
-        # Open and read server properties
-        self.log.info("Reading server properties")
-        self.properties = jproperties.Properties()
-        with (self.root / "server.properties").open("r") as f:
-            self.properties.load(f.read())
+            # Open and read server properties
+            self.log.info("Reading server properties")
+            self.properties = jproperties.Properties()
+            with (self.root / "server.properties").open("r") as f:
+                self.properties.load(f.read())
 
-        # Open and read icon if it exists
-        self.log.info("Reading server icon properties")
-        icon_path = self.root / "world" / "icon.png"
-        if icon_path.exists():
-            with icon_path.open("rb") as f:
-                data = f.read()
-            self.icon = f"data:image/png;base64,{base64.b64encode(data).decode('utf-8')}"
-        else:
-            self.icon = None
-
-        # Open proxy server
-        self._proxy_server = await self._acm_stack.enter_async_context(self.mc_proxy_server())
+            # Open and read icon if it exists
+            self.log.info("Reading server icon properties")
+            icon_path = self.root / "world" / "icon.png"
+            if icon_path.exists():
+                with icon_path.open("rb") as f:
+                    data = f.read()
+                self.icon = f"data:image/png;base64,{base64.b64encode(data).decode('utf-8')}"
+            else:
+                self.icon = None
         return self
 
-    async def __aexit__(self, *args):
-        # Exit all open context managers
-        await self._acm_stack.__aexit__(*args)
-
-        self.log.debug("Exiting")
-        return False
-
     async def serve_forever(self):
-        # Startup proxy server as background task
-        proxy_server_task = asyncio.create_task(self._proxy_server.serve_forever())
+        while True:
+            # Start up or shut down server proc
+            if self.status == MCServer.Status.RUNNING and not self.is_running():
+                self.server_proc = await self._acm_stack.enter_async_context(self.mc_server_proc())
+            elif self.status == MCServer.Status.SLEEPING and not self.is_sleeping():
+                await self.server_proc.__aexit__(None, None, None)
 
-        try:
+            # Do nothing until the status changes
+            while not self._status_change.is_set():
+                await self._status_change.wait()
+            self.log.debug("Status change requested")
+            self._status_change.clear()
+
+    async def monitor_server_proc(self, server_proc):
+        self.log.debug("Starting backend monitor task for pid %s", server_proc.pid)
+        async def log_pipe(pipe, pipe_name="pipe", level=logging.DEBUG):
+            pipe_logger = BytesLoggerAdapter() | PrefixLoggerAdapter(f"backend:{pipe_name}") | self.log
+            task_logger = PrefixLoggerAdapter(f"backend {pipe_name} logger") | self.log
+            task_logger.debug("Starting backend monitor logging task")
             while True:
-                # Start up or shut down server proc
-                if self.status == MCServer.Status.RUNNING and not self.is_running():
-                    self.server_proc = await self._acm_stack.enter_async_context(self.mc_server_proc())
-                elif self.status == MCServer.Status.SLEEPING and not self.is_sleeping():
-                    await self.server_proc.__aexit__(None, None, None)
-
-                # Do nothing until the status changes
-                while not self._status_change.is_set():
-                    await self._status_change.wait()
-                self.log.debug("Status change requested")
-                self._status_change.clear()
-        finally:
-            # Cancel proxy server task when exiting
-            proxy_server_task.cancel()
-            try:
-                await proxy_server_task
-            except asyncio.CancelledError:
-                pass
+                msg = None
+                try:
+                    msg = await pipe.readuntil()
+                except asyncio.LimitOverrunError as err:
+                    task_logger.warning("LimitOverrunError caught after %s bytes", err.consumed)
+                    msg = await pipe.read(err.consumed)
+                except asyncio.IncompleteReadError as err:
+                    task_logger.warning("IncompleteReadError caught after %s bytes", len(err.partial))
+                    msg = err.partial
+                except asyncio.CancelledError:
+                    task_logger.debug("Task canceled")
+                    break
+                except Exception as err:
+                    task_logger.exception("Exception caught: %s", err)
+                if msg is not None:
+                    if len(msg) == 0:
+                        task_logger.debug("Pipe closed")
+                        break
+                    pipe_logger.log(level, msg)
+            task_logger.debug("Exiting")
+        try:
+            await asyncio.gather(log_pipe(server_proc.stdout, "stdout"), log_pipe(server_proc.stderr, "stderr"))
+        except asyncio.CancelledError:
+            self.log.debug("Backend monitor task canceled")
 
     @asynccontextmanager
     async def mc_server_proc(self, stop_timeout=90, sigint_timeout=90, sigterm_timeout=90):
@@ -113,6 +121,7 @@ class MCServer(AbstractAsyncContextManager):
         )
         self.log.info("Starting minecraft server process with pid %s", server_proc.pid)
         try:
+            monitor_task = asyncio.create_task(self.monitor_server_proc(server_proc))
             yield server_proc
         finally:
             self.log.info("Closing minecraft server process")
@@ -154,124 +163,20 @@ class MCServer(AbstractAsyncContextManager):
                 server_proc.send_signal(signal.SIGKILL)
                 self.log.debug("Minecraft server process exited after SIGKILL")
 
-    @asynccontextmanager
-    async def mc_proxy_server(self):
-        self.log.info("Starting proxy server on port %s", MINECRAFT_PORT)
-        proxy_server = await asyncio.start_server(self._handle_client, "0.0.0.0", MINECRAFT_PORT)
-        async with proxy_server:
+            monitor_task.cancel()
             try:
-                yield proxy_server
-            finally:
-                self.log.info("Closing proxy server")
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
 
-    async def _handle_pings(self, reader, writer):
-        try:
-            # Read some initial data to figure out if the packet is a legacy ping
-            data = await reader.read(1024)
+    async def __aexit__(self, *args):
+        if self._acm_stack is not None:
+            # Exit all open context managers
+            await self._acm_stack.__aexit__(*args)
 
-            try:
-                # Try parsing as a legacy ping
-                _, legacy_ping = mcpu.decode_legacy_ping(data)
-                self.log.debug("Received legacy ping: %s", legacy_ping)
-                legacy_ping_response = mcpu.encode_legacy_ping_response(self.version.protocol, self.version.name, self.motd, self.max_players)
-                writer.write(legacy_ping_response)
-                await writer.drain()
-            except mcpu.MCProtocolError as err:
-                # Handle modern handshake
-                try:
-                    apacket_gen = mcpu.read_packets_forever(reader, initial_data=data, timeout=30)
-
-                    # Read initial handshake packet
-                    _, handshake = mcpu.decode_handshake_packet(await anext(apacket_gen))
-                    self.log.debug("Received handshake: %s", handshake)
-                    if handshake["next_state"] == 1:
-                        # Read request packet and respond
-                        mcpu.decode_request_packet(await anext(apacket_gen))
-
-                        # Status request
-                        handshake_response_paylod = {
-                            "version": {
-                                "name": self.version.name,
-                                "protocol": self.version.protocol
-                            },
-                            "players": {
-                                "max": self.max_players,
-                                "online": 0,
-                                "sample": []
-                            },	
-                            "description": {
-                                "text": self.motd
-                            }
-                        }
-                        if self.icon is not None:
-                            handshake_response_paylod["favicon"] = self.icon
-                        handshake_response = mcpu.encode_json_packet(0, handshake_response_paylod)
-                        writer.write(handshake_response)
-                        await writer.drain()
-
-                        # Read ping packet and respond with pong
-                        with suppress(asyncio.TimeoutError):
-                            _, ping_payload = mcpu.decode_pingpong_packet(await anext(apacket_gen))
-                            writer.write(mcpu.encode_pingpong_packet(ping_payload))
-                            await writer.drain()
-                    elif handshake["next_state"] == 2:
-                        # Login attempt
-                        kick_payload = {
-                            "text": "§eServer is waking up, try again in 30s"
-                        }
-                        handshake_response = mcpu.encode_json_packet(0, kick_payload)
-                        writer.write(handshake_response)
-                        await writer.drain()
-                        self.set_running()  # Start actual server process
-                    else:
-                        raise mcpu.MCProtocolError(f"Unknown next state in handshake: {handshake['next_state']}")
-                except mcpu.MCProtocolError as err:
-                    self.log.debug("Error during handshake: %s", err)
-                except ConnectionResetError:
-                    self.log.info("Client closed connection unexpectedly")
-        except Exception as err:
-            self.log.exception("Exception caught while handling client ping: %s", err)
-
-    async def _forward_to_backend(self, reader, writer, backend_reader, backend_writer):
-        # Forward traffic to actual minecraft server
-        try:
-            async def forward(src_reader, dst_writer):
-                try:
-                    while True:
-                        data = await src_reader.read(4096)
-                        if not data:
-                            break
-                        dst_writer.write(data)
-                        await dst_writer.drain()
-                finally:
-                    dst_writer.close()
-
-            await asyncio.gather(
-                forward(reader, backend_writer),
-                forward(backend_reader, writer)
-            )
-        except Exception as err:
-            self.log.exception("Exception caught while forwarding to backend: %s", err)
-        finally:
-            backend_writer.close()
-            await backend_writer.wait_closed()
-
-    async def _handle_client(self, reader, writer):
-        try:
-            try:
-                # Try connecting to the backend server
-                backend_reader, backend_writer = await asyncio.open_connection("0.0.0.0", self.port)
-            except ConnectionRefusedError as err:
-                # Backend server isn't running, handle the pings here in the proxy
-                await self._handle_pings(reader, writer)
-            else:
-                # Backend server is running, forward packets to it
-                await self._forward_to_backend(reader, writer, backend_reader, backend_writer)
-        except Exception as err:
-            self.log.exception("Exception caught while handling client: %s", err)
-        finally:
-            writer.close()
-            await writer.wait_closed()
+            self._acm_stack = None
+            self.log.debug("Exiting server")
+        return False
 
     @property
     def port(self):
