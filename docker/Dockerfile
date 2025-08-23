@@ -30,6 +30,4 @@ EXPOSE 25565
 
 # Run with Uvicorn
 ENV PYTHONUNBUFFERED=1
-ARG DEBUG
-ENV DEBUG "$DEBUG"
 CMD ["uvicorn", "--app-dir", "orchestrator", "main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,15 +1,18 @@
 name: silkjam
 services:
   silkjam:
-    build: .
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     image: silkjam:latest
     container_name: silkjam
     ports:
       - ${API_PORT:-8000}:8000
       - ${MINECRAFT_PORT:-25565}:25565  # Expose Minecraft port
     volumes:
-      - data:/app/data
+      - ${DATA_VOLUME:-data}:/app/data
     environment:
+      - DEBUG=${DEBUG:-false}
       - HOSTNAME=${HOSTNAME:-localhost}  # Domain name
     restart: unless-stopped
 volumes:
