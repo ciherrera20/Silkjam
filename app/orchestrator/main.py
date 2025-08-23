@@ -9,7 +9,7 @@ import logging
 #
 # Project imports
 #
-from mc_orchestrator import MCOrchestrator
+from core.orchestrator import MCOrchestrator
 
 if os.environ.get("DEBUG"):
     level = logging.DEBUG

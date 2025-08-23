@@ -8,8 +8,8 @@ from collections import defaultdict
 #
 # Project imports
 #
-from mc_server import MCServer
-from mc_proxy import MCProxy
+from .backend import MCBackend
+from .proxy import MCProxy
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
         self._proxy_tasks = {}  # Proxy name -> running proxy task
 
         # Hold server objects and background tasks
-        self.servers = {}  # Server name -> MCServer object
+        self.servers = {}  # Server name -> MCBackend object
         self._server_tasks = {}  # Server name -> running server task
 
     async def __aenter__(self):
@@ -108,7 +108,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
                 server_listing_names.add(name)
                 if name not in self.servers:
                     logger.info("Found server listing entry %s", name)
-                    mc_server = await self._acm_stack.enter_async_context(MCServer(self.root / name, listing))
+                    mc_server = await self._acm_stack.enter_async_context(MCBackend(self.root / name, listing))
                     self.servers[name] = mc_server
                     mc_server_task = asyncio.create_task(mc_server.serve_forever())
                     self._server_tasks[name] = mc_server_task

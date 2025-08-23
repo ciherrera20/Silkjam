@@ -4,10 +4,7 @@ import struct
 import asyncio
 import logging
 from collections import namedtuple
-from collections.abc import (
-    Buffer,
-    AsyncIterator
-)
+from collections.abc import Buffer
 
 logger = logging.getLogger(__name__)
 

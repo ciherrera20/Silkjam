@@ -6,15 +6,13 @@ from contextlib import suppress, AbstractAsyncContextManager, AsyncExitStack
 #
 # Project imports
 #
-from mc_server import MCServer
-import mc_protocol_utils as mcpu
-from mc_protocol_utils import (
+from .backend import MCBackend
+from .protocol import (
     PacketReader,
     PacketWriter,
-    MCProtocolError,
-    MCVersion
+    MCProtocolError
 )
-from utils import PrefixLoggerAdapter
+from utils.logger_adapters import PrefixLoggerAdapter
 logger = logging.getLogger(__name__)
 
 HOSTNAME = os.environ["HOSTNAME"]
@@ -31,11 +29,11 @@ class MCProxy(AbstractAsyncContextManager):
         self.log = PrefixLoggerAdapter(logger, self.name)
 
     @property
-    def backends(self) -> list[MCServer]:
+    def backends(self) -> list[MCBackend]:
         return self._backends
 
     @backends.setter
-    def backends(self, new_backends: list[MCServer]):
+    def backends(self, new_backends: list[MCBackend]):
         self._backends = new_backends
         self.subdomain_map = {server.subdomain: server for server in self._backends}  # Subdomain -> server
 
@@ -51,7 +49,7 @@ class MCProxy(AbstractAsyncContextManager):
             await self._acm_stack.__aenter__()
         return self
 
-    async def _handle_handshake(self, packet_reader: PacketReader, packet_writer: PacketWriter) -> MCServer | None:
+    async def _handle_handshake(self, packet_reader: PacketReader, packet_writer: PacketWriter) -> MCBackend | None:
         forward = False  # Whether or not to forward to the backend
         backend = None  # Identify backend
         handshake = None  # Handshake to forward to the backend
@@ -119,12 +117,12 @@ class MCProxy(AbstractAsyncContextManager):
                                 forward = True
                                 handshake = handshake
                             else:
-                                raise mcpu.MCProtocolError(f"Unknown next state in handshake: {handshake['next_state']}")
+                                raise MCProtocolError(f"Unknown next state in handshake: {handshake['next_state']}")
                         else:
                             self.log.debug("No server found at %s", server_address)
                     else:
                         self.log.debug("Could not find hostname %s in server address %s", HOSTNAME, server_address)
-                except mcpu.MCProtocolError as err:
+                except MCProtocolError as err:
                     self.log.debug("Error during handshake: %s", err)
                 except ConnectionResetError:
                     self.log.info("Client closed connection unexpectedly")

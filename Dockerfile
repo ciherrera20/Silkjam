@@ -32,4 +32,4 @@ EXPOSE 25565
 ENV PYTHONUNBUFFERED=1
 ARG DEBUG
 ENV DEBUG "$DEBUG"
-CMD ["uvicorn", "--app-dir", "orchestrator", "server_webapp:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "--app-dir", "orchestrator", "main:app", "--host", "0.0.0.0", "--port", "8000"]

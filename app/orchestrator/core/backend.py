@@ -10,14 +10,14 @@ from contextlib import asynccontextmanager, suppress, AbstractAsyncContextManage
 #
 # Project imports
 #
-from mc_protocol_utils import MCVersion
-from utils import PrefixLoggerAdapter, BytesLoggerAdapter
+from .protocol import MCVersion
+from utils.logger_adapters import PrefixLoggerAdapter, BytesLoggerAdapter
 
 logger = logging.getLogger(__name__)
 
 MINECRAFT_PORT = 25565
 
-class MCServer(AbstractAsyncContextManager):
+class MCBackend(AbstractAsyncContextManager):
     class Status(IntEnum):
         SLEEPING = 0
         RUNNING = 1
@@ -27,7 +27,7 @@ class MCServer(AbstractAsyncContextManager):
         self.name = listing["name"]
         self.version = MCVersion(**listing["version"])
         self.subdomain = listing["subdomain"]
-        self.status = MCServer.Status.SLEEPING
+        self.status = MCBackend.Status.SLEEPING
         self._acm_stack = None
 
         self.properties = None
@@ -66,9 +66,9 @@ class MCServer(AbstractAsyncContextManager):
     async def serve_forever(self):
         while True:
             # Start up or shut down server proc
-            if self.status == MCServer.Status.RUNNING and not self.is_running():
+            if self.status == MCBackend.Status.RUNNING and not self.is_running():
                 self.server_proc = await self._acm_stack.enter_async_context(self.mc_server_proc())
-            elif self.status == MCServer.Status.SLEEPING and not self.is_sleeping():
+            elif self.status == MCBackend.Status.SLEEPING and not self.is_sleeping():
                 await self.server_proc.__aexit__(None, None, None)
 
             # Do nothing until the status changes
@@ -199,11 +199,11 @@ class MCServer(AbstractAsyncContextManager):
     def set_sleeping(self):
         if not self.is_sleeping():
             self.log.debug("Set sleeping")
-            self.status = MCServer.Status.SLEEPING
+            self.status = MCBackend.Status.SLEEPING
             self._status_change.set()
 
     def set_running(self):
         if not self.is_running():
             self.log.debug("Set running")
-            self.status = MCServer.Status.RUNNING
+            self.status = MCBackend.Status.RUNNING
             self._status_change.set()

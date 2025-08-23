@@ -6,7 +6,12 @@ from contextlib import AbstractAsyncContextManager
 #
 # Project imports
 #
-from mc_protocol_utils import PacketReader, PacketWriter, MCVersion, MCProtocolError
+from .protocol import (
+    PacketReader,
+    PacketWriter,
+    MCVersion,
+    MCProtocolError
+)
 
 logger = logging.getLogger(__name__)
 
