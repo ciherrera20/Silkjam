@@ -15,8 +15,6 @@ from utils.logger_adapters import PrefixLoggerAdapter, BytesLoggerAdapter
 
 logger = logging.getLogger(__name__)
 
-MINECRAFT_PORT = 25565
-
 class MCBackend(AbstractAsyncContextManager):
     class Status(IntEnum):
         SLEEPING = 0

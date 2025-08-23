@@ -97,7 +97,7 @@ class MCProxy(AbstractAsyncContextManager):
                                     },
                                     "players": {
                                         "max": backend.max_players,
-                                        "online": 0,
+                                        "online": -1,
                                         "sample": []
                                     },	
                                     "description": {

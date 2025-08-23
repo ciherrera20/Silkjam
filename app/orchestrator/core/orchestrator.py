@@ -1,3 +1,4 @@
+import os
 import json
 import asyncio
 import logging
@@ -12,6 +13,8 @@ from .backend import MCBackend
 from .proxy import MCProxy
 
 logger = logging.getLogger(__name__)
+
+MINECRAFT_PORT = os.environ.get("MINECRAFT_PORT", 25565)
 
 class MCOrchestrator(AbstractAsyncContextManager):
     def __init__(self, root: str | Path):
@@ -39,36 +42,28 @@ class MCOrchestrator(AbstractAsyncContextManager):
             # Enter context manager stack
             await self._acm_stack.__aenter__()
 
-            # Open and read server listing file
+            # Open and read config file
             self.config_file = self._acm_stack.enter_context((self.root / "config.json").open("a+"))
             self.config_file.seek(0)
             try:
                 logger.info("Reading config file")
                 self.config = json.load(self.config_file)
-            except json.JSONDecodeError:
-                logger.info("Error reading server listing. Creating default server listing")
-            self.config = {
-                "proxy_listing": [
-                    {
-                        "name": "proxy1",
-                        "enabled": True,
-                        "port": 25565
-                    }
-                ],
-                "server_listing": [
-                    {
-                        "name": "astraeste",
-                        "subdomain": "astraeste",
-                        "version": {
-                            "name": "1.21.4",
-                            "protocol": 769
-                        },
-                        "enabled": True,
-                        "proxy": "proxy1",
-                    }
-                ]
-            }
-            json.dump(self.config, self.config_file, indent=4)
+            except json.JSONDecodeError as err:
+                logger.error(err)
+                logger.info("Error reading config. Creating default config")
+                self.config = {
+                    "proxy_listing": [
+                        {
+                            "name": "proxy1",
+                            "enabled": True,
+                            "port": MINECRAFT_PORT
+                        }
+                    ],
+                    "server_listing": []
+                }
+                self.config_file.truncate(0)
+                json.dump(self.config, self.config_file, indent=4)
+                self.config_file.flush()
         return self
 
     async def run_servers(self):
@@ -146,7 +141,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
         if self._acm_stack is not None:
             # Write server listing file
             self.config_file.truncate(0)
-            json.dump(self.config, self.config_file)
+            json.dump(self.config, self.config_file, indent=4)
 
             # Exit all open context managers
             await self._acm_stack.__aexit__(*args)

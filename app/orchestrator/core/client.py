@@ -1,3 +1,8 @@
+if __name__ == "__main__":
+    import os, sys, subprocess
+    ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True).stdout.decode("utf-8").strip()
+    sys.path.append(os.path.join(ROOT, 'app', 'orchestrator'))
+
 import asyncio
 import logging
 from typing import Self
@@ -6,7 +11,7 @@ from contextlib import AbstractAsyncContextManager
 #
 # Project imports
 #
-from .protocol import (
+from core.protocol import (
     PacketReader,
     PacketWriter,
     MCVersion,
@@ -53,7 +58,7 @@ class MCClient(AbstractAsyncContextManager):
             packet_writer.write_pingpong_packet(packet_writer.random_ping_payload())
             await self.writer.drain()
 
-            status_response = await packet_reader.read_json_packet()
+            _, status_response = await packet_reader.read_json_packet()
             logger.debug("Recieved handshake response from %s:%s", self.hostname, self.port)
             return status_response
         except ConnectionResetError:
@@ -66,17 +71,32 @@ class MCClient(AbstractAsyncContextManager):
             logger.exception("Exception caught while requesting server %s:%s's status: %s", self.hostname, self.port, err)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s")
+    import json
+    import argparse
+    from rich_argparse import RichHelpFormatter
+
+    parser = argparse.ArgumentParser(description='Simple Minecraft client that requests a status from a server', formatter_class=RichHelpFormatter)
+    # parser.add_argument('url', help='URL to connect to')
+    parser.add_argument('--verbose', '-v', action='store_true', default=False, help='Enables verbose logging')
+    parser.add_argument('--full', '-f', action='store_true', default=False, help='Output full response')
+    args = parser.parse_args()
+
     logging.getLogger("asyncio").setLevel(logging.WARNING)
+    if args.verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.ERROR
+    logging.basicConfig(level=level, format="%(message)s")
     
     async def request_status():
-        async with MCClient("AstraEste.minehut.gg", 25565) as client:
+        async with MCClient("astraeste.mc.localhost", 25565) as client:
             return await client.request_status(timeout=30)
-    
-    status = None
-    err = None
+
     try:
         status = asyncio.run(request_status())
+        if status is not None:
+            if not args.full and "favicon" in status and len(status["favicon"]) > 100:
+                status["favicon"] = status["favicon"][:97] + "..."
+            print(json.dumps(status, indent=4))
     except Exception as e:
-        logger.exception(e)
-        err = e
+        sys.exit(1)

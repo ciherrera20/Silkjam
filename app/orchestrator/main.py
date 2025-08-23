@@ -11,7 +11,7 @@ import logging
 #
 from core.orchestrator import MCOrchestrator
 
-if os.environ.get("DEBUG"):
+if os.environ.get("DEBUG", "").lower() == "true":
     level = logging.DEBUG
 else:
     level = logging.INFO
@@ -22,6 +22,7 @@ logging.basicConfig(
 )
 logging.getLogger("asyncio").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+logger.info("Logging level is %s", level)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
