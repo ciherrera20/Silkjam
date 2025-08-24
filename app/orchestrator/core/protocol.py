@@ -259,9 +259,9 @@ class PacketReader:
             try:
                 while True:
                     try:
-                        if self.packet_length is None:
+                        if packet_length is None:
                             logger.debug("Parsing %s bytes as VarInt", j-i)
-                            _, self.packet_length = self.decode_varint(data[i:j])
+                            _, packet_length = self.decode_varint(data[i:j])
                     except asyncio.IncompleteReadError:
                         logger.debug("Incomplete VarInt")
                         if (n - j) < self.MIN_READ_SIZE:  # Need to allocate a new buffer
