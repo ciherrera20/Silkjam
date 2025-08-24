@@ -45,15 +45,19 @@ class MCBackend(AbstractAsyncContextManager):
             await self._acm_stack.__aenter__()
 
             # Open and read server properties
-            self.log.info("Reading server properties")
             self.properties = jproperties.Properties()
-            with (self.root / "server.properties").open("r") as f:
-                self.properties.load(f.read())
+            properties_path = (self.root / "server.properties")
+            if properties_path.exists():
+                self.log.info("Reading server properties")
+                with properties_path.open("r") as f:
+                    self.properties.load(f.read())
+            else:
+                self.log.info("Server properties does not exist!")
 
             # Open and read icon if it exists
-            self.log.info("Reading server icon properties")
             icon_path = self.root / "world" / "icon.png"
             if icon_path.exists():
+                self.log.info("Reading server icon properties")
                 with icon_path.open("rb") as f:
                     data = f.read()
                 self.icon = f"data:image/png;base64,{base64.b64encode(data).decode('utf-8')}"
@@ -178,15 +182,18 @@ class MCBackend(AbstractAsyncContextManager):
 
     @property
     def port(self):
-        return int(self.properties["server-port"].data)
+        if "server-port" in self.properties:
+            return int(self.properties["server-port"].data)
     
     @property
     def max_players(self):
-        return int(self.properties["max-players"].data)
+        if "max-players" in self.properties:
+            return int(self.properties["max-players"].data)
 
     @property
     def motd(self):
-        return self.properties["motd"].data
+        if "motd" in self.properties:
+            return self.properties["motd"].data
 
     def is_sleeping(self):
         return self.server_proc is None or self.server_proc.returncode is not None
