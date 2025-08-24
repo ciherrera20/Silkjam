@@ -85,7 +85,6 @@ class PacketReader:
     @staticmethod
     def decode_varint(data: Buffer) -> tuple[int, int]:
         num = 0
-        shift = 0
         i = 0
         while True:
             if i + 1 > 5:
@@ -94,8 +93,7 @@ class PacketReader:
                 raise asyncio.IncompleteReadError(data, None)
             b = data[i]
 
-            num |= ((b & 0b01111111) << shift)
-            shift += 7
+            num |= ((b & 0b01111111) << (7 * i))
 
             if (b & 0b10000000) == 0:
                 break
