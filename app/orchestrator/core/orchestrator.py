@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from collections import defaultdict
+from weakref import WeakKeyDictionary
 
 #
 # Project imports
@@ -26,13 +27,8 @@ class MCOrchestrator(AbstractAsyncContextManager):
         self.config = None
         self._config_changed = asyncio.Event()  # Notify run_servers whenever the server listing changes
 
-        # Hold proxy objects and background tasks
         self.proxies = {}  # Proxy name -> MCProxy object
-        self._proxy_tasks = {}  # Proxy name -> running proxy task
-
-        # Hold server objects and background tasks
-        self.servers = {}  # Server name -> MCBackend object
-        self._server_tasks = {}  # Server name -> running server task
+        self.backends = {}  # Server name -> MCBackend object
 
     async def __aenter__(self):
         if self._acm_stack is None:
@@ -48,6 +44,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
             try:
                 logger.info("Reading config file")
                 self.config = json.load(self.config_file)
+                logger.info("%s", self.config)
             except json.JSONDecodeError as err:
                 logger.error(err)
                 logger.info("Error reading config. Creating default config")
@@ -67,7 +64,14 @@ class MCOrchestrator(AbstractAsyncContextManager):
         return self
 
     async def run_servers(self):
+        # Keep track of async context managers being run and the tasks used to run them
+        task_to_acm = WeakKeyDictionary()  # task -> async context manager
+        acm_to_task = WeakKeyDictionary()  # async context manager -> task
+
         while True:
+            # Recreate task list when config changes
+            task_list = []
+
             # Start proxies in the listing that are not currently running
             proxy_listing_names = set()
             for listing in self.config["proxy_listing"]:
@@ -77,63 +81,63 @@ class MCOrchestrator(AbstractAsyncContextManager):
                     logger.info("Found proxy listing entry %s", name)
                     proxy = await self._acm_stack.enter_async_context(MCProxy(listing))
                     self.proxies[name] = proxy
-                    proxy_task = asyncio.create_task(proxy.serve_forever())
-                    self._proxy_tasks[name] = proxy_task
-                    proxy_task.add_done_callback(lambda task: self._proxy_tasks.pop(proxy.name))
+                    run_proxy_task = asyncio.create_task(proxy.serve_forever(), name=name)
+                    acm_to_task[proxy] = run_proxy_task
+                    task_to_acm[run_proxy_task] = proxy
+                    task_list.append(run_proxy_task)
 
             # Cleanup any proxies in the listing that no longer exist
             removed_proxy_names = set()
             for name, proxy in self.proxies.items():
                 if name not in proxy_listing_names:
+                    acm_to_task[proxy].cancel()  # Will be awaited later
                     removed_proxy_names.add(name)
             for name in removed_proxy_names:
                 del self.proxies[name]
-                if name in self._proxy_tasks:
-                    proxy_task = self._proxy_tasks[name]
-                    proxy_task.cancel()
-                    try:
-                        await proxy_task
-                    except asyncio.CancelledError:
-                        pass
 
             # Start servers in the listing that are not currently running
-            server_listing_names = set()
+            backend_names = set()
             for listing in self.config["server_listing"]:
                 name = listing["name"]
-                server_listing_names.add(name)
-                if name not in self.servers:
+                backend_names.add(name)
+                if name not in self.backends:
                     logger.info("Found server listing entry %s", name)
-                    mc_server = await self._acm_stack.enter_async_context(MCBackend(self.root / name, listing))
-                    self.servers[name] = mc_server
-                    mc_server_task = asyncio.create_task(mc_server.serve_forever())
-                    self._server_tasks[name] = mc_server_task
-                    mc_server_task.add_done_callback(lambda task: self._server_tasks.pop(mc_server.name))
+                    backend = await self._acm_stack.enter_async_context(MCBackend(self.root / name, listing))
+                    self.backends[name] = backend
+                    run_backend_task = asyncio.create_task(backend.serve_forever(), name=name)
+                    acm_to_task[backend] = run_backend_task
+                    task_to_acm[run_backend_task] = backend
+                    task_list.append(run_backend_task)
 
             # Cleanup any servers in the listing that no longer exist
-            removed_server_names = set()
-            for name, mc_server in self.servers.items():
-                if name not in server_listing_names:
-                    removed_server_names.add(name)
-            for name in removed_server_names:
-                del self.servers[name]
-                if name in self._server_tasks:
-                    server_task = self._server_tasks[name]
-                    server_task.cancel()
-                    try:
-                        await server_task
-                    except asyncio.CancelledError:
-                        pass
+            removed_backend_names = set()
+            for name, backend in self.backends.items():
+                if name not in backend_names:
+                    acm_to_task[backend].cancel()  # Will be awaited later
+                    removed_backend_names.add(name)
+            for name in removed_backend_names:
+                del self.backends[name]
 
             # Update all proxy backends
             proxy_backends = defaultdict(list)
             for listing in self.config["server_listing"]:
-                proxy_backends[listing["proxy"]].append(self.servers[listing["name"]])
+                proxy_backends[listing["proxy"]].append(self.backends[listing["name"]])
             for name, proxy in self.proxies.items():
                 proxy.backends = proxy_backends[name]
 
-            # Do nothing until the config changes
+            # Do nothing until the config changes or a proxy or server task errors out
             while not self._config_changed.is_set():
-                await self._config_changed.wait()
+                monitor_config_task = asyncio.create_task(self._config_changed.wait())
+                done, task_list = await asyncio.wait([monitor_config_task] + task_list, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    if task is not monitor_config_task:
+                        try:
+                            await task
+                        except Exception as err:
+                            logger.exception("Exception caught while running %s: %s", task.get_name(), err)
+                            await task_to_acm[task].__aexit__(err, None, None)
+                        else:
+                            await task_to_acm[task].__aexit__(None, None, None)
             logger.info("Config change requested")
             self._config_changed.clear()
 
