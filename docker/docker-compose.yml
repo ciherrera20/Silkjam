@@ -12,6 +12,8 @@ services:
     volumes:
       - ${DATA_VOLUME:-data}:/app/data
     environment:
+      - API_PORT=${API_PORT:-8000}
+      - MINECRAFT_PORT=${MINECRAFT_PORT-25565}
       - DEBUG=${DEBUG:-false}
       - HOSTNAME=${HOSTNAME:-localhost}  # Domain name
     restart: unless-stopped
