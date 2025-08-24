@@ -75,11 +75,18 @@ if __name__ == "__main__":
     import argparse
     from rich_argparse import RichHelpFormatter
 
-    parser = argparse.ArgumentParser(description='Simple Minecraft client that requests a status from a server', formatter_class=RichHelpFormatter)
-    # parser.add_argument('url', help='URL to connect to')
-    parser.add_argument('--verbose', '-v', action='store_true', default=False, help='Enables verbose logging')
-    parser.add_argument('--full', '-f', action='store_true', default=False, help='Output full response')
+    parser = argparse.ArgumentParser(description="Simple Minecraft client that requests a status from a server", formatter_class=RichHelpFormatter)
+    parser.add_argument("host", help="Hostname of the Minecraft server. You may also specify a port using the \":\" character.")
+    parser.add_argument("--verbose", "-v", action="store_true", default=False, help="Enables verbose logging")
+    parser.add_argument("--full", "-f", action="store_true", default=False, help="Output full response")
     args = parser.parse_args()
+
+    if ":" in args.host:
+        host, port = args.host.split(":")
+        port = int(port)
+    else:
+        host = args.host
+        port = 25565  # Default minecraft port
 
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     if args.verbose:
@@ -89,7 +96,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=level, format="%(message)s")
     
     async def request_status():
-        async with MCClient("astraeste.mc.localhost", 25565) as client:
+        async with MCClient(host, port) as client:
             return await client.request_status(timeout=30)
 
     try:
