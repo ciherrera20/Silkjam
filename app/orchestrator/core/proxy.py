@@ -10,6 +10,7 @@ from .backend import MCBackend
 from .protocol import (
     PacketReader,
     PacketWriter,
+    PacketType,
     MCProtocolError
 )
 from utils.logger_adapters import PrefixLoggerAdapter
@@ -87,31 +88,35 @@ class MCProxy(AbstractAsyncContextManager):
 
                             if handshake["next_state"] == 1:
                                 # Read request packet and respond
-                                await packet_reader.read_request_packet()
+                                packet = _, (packet_id, _) = await packet_reader.read_packet()
+                                # await packet_reader.read_request_packet()
 
-                                # Status request
-                                handshake_response_paylod = {
-                                    "version": {
-                                        "name": backend.version.name,
-                                        "protocol": backend.version.protocol
-                                    },
-                                    "players": {
-                                        "max": backend.max_players,
-                                        "online": -1,
-                                        "sample": []
-                                    },	
-                                    "description": {
-                                        "text": backend.motd
+                                if packet_id == PacketType.REQUEST:  # Client is requesting status
+                                    handshake_response_paylod = {
+                                        "version": {
+                                            "name": backend.version.name,
+                                            "protocol": backend.version.protocol
+                                        },
+                                        "players": {
+                                            "max": backend.max_players,
+                                            "online": -1,
+                                            "sample": []
+                                        },	
+                                        "description": {
+                                            "text": backend.motd
+                                        }
                                     }
-                                }
-                                if backend.icon is not None:
-                                    handshake_response_paylod["favicon"] = backend.icon
-                                packet_writer.write_json_packet(0, handshake_response_paylod)
-                                await packet_writer.drain()
+                                    if backend.icon is not None:
+                                        handshake_response_paylod["favicon"] = backend.icon
+                                    packet_writer.write_json_packet(0, handshake_response_paylod)
+                                    await packet_writer.drain()
+                                    ping_payload = await packet_reader.read_pingpong_packet()
+                                elif packet_id == PacketType.PINGPONG:  # Client skipped status request
+                                    _, ping_payload = packet_reader.decode_pingpong_packet(packet)
 
                                 # Read ping packet and respond with pong
                                 with suppress(asyncio.TimeoutError):
-                                    packet_writer.write_pingpong_packet(await packet_reader.read_pingpong_packet())
+                                    packet_writer.write_pingpong_packet(ping_payload)
                                     await packet_writer.drain()
                             elif handshake["next_state"] == 2:
                                 forward = True

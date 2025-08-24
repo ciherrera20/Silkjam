@@ -1,4 +1,5 @@
 import json
+import enum
 import random
 import struct
 import asyncio
@@ -10,6 +11,11 @@ logger = logging.getLogger(__name__)
 
 ################################################ Minecraft protocol ################################################
 # Documentation at: https://minecraft.wiki/w/Minecraft_Wiki:Protocol_documentation
+
+class PacketType(enum.IntEnum):
+    HANDSHAKE = 0
+    REQUEST = 0
+    PINGPONG = 1
 
 MCVersion = namedtuple("MCVersion", ["name", "protocol"])
 type Packet[T: Buffer] = tuple[int, tuple[int, T]]
@@ -127,8 +133,8 @@ class PacketReader:
     def decode_handshake_packet(cls, packet: Packet[Buffer]) -> tuple[int, dict]:
         try:
             n, (packet_id, packet_data) = packet
-            if packet_id != 0:
-                raise MCProtocolError(packet, f"Expected packet id 0 but got {packet_id}")
+            if packet_id != PacketType.HANDSHAKE:
+                raise MCProtocolError(packet, f"Expected packet id {PacketType.HANDSHAKE} but got {packet_id}")
             i = 0
             n, protocol_version = cls.decode_varint(packet_data)
             i += n
@@ -153,8 +159,8 @@ class PacketReader:
     def decode_request_packet(packet: Packet[Buffer]) -> tuple[int, None]:
         try:
             n, (packet_id, packet_data) = packet
-            if packet_id != 0:
-                raise MCProtocolError(packet, f"Expected packet id 0 but got {packet_id}")
+            if packet_id != PacketType.REQUEST:
+                raise MCProtocolError(packet, f"Expected packet id {PacketType.REQUEST} but got {packet_id}")
             if len(packet_data) != 0:
                 raise MCProtocolError(packet, f"Extra data")
             return n, None
@@ -174,8 +180,8 @@ class PacketReader:
     def decode_pingpong_packet(packet: Packet[Buffer]) -> tuple[int, int]:
         try:
             n, (packet_id, packet_data) = packet
-            if packet_id != 1:
-                raise MCProtocolError(packet, f"Expected packet id 1 but got {packet_id}")
+            if packet_id != PacketType.PINGPONG:
+                raise MCProtocolError(packet, f"Expected packet id {PacketType.PINGPONG} but got {packet_id}")
             if len(packet_data) != 8:
                 raise MCProtocolError(packet, f"Expected 8 bytes of payload but received {len(packet_data)}")
             payload = struct.unpack(">q", packet_data)[0]
