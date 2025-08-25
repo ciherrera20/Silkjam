@@ -67,11 +67,9 @@ class MCOrchestrator(AbstractAsyncContextManager):
         # Keep track of async context managers being run and the tasks used to run them
         task_to_acm = WeakKeyDictionary()  # task -> async context manager
         acm_to_task = WeakKeyDictionary()  # async context manager -> task
+        pending_tasks = []
 
         while True:
-            # Recreate task list when config changes
-            task_list = []
-
             # Start proxies in the listing that are not currently running
             proxy_listing_names = set()
             for listing in self.config["proxy_listing"]:
@@ -84,7 +82,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
                     run_proxy_task = asyncio.create_task(proxy.serve_forever(), name=name)
                     acm_to_task[proxy] = run_proxy_task
                     task_to_acm[run_proxy_task] = proxy
-                    task_list.append(run_proxy_task)
+                    pending_tasks.append(run_proxy_task)
 
             # Cleanup any proxies in the listing that no longer exist
             removed_proxy_names = set()
@@ -107,7 +105,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
                     run_backend_task = asyncio.create_task(backend.serve_forever(), name=name)
                     acm_to_task[backend] = run_backend_task
                     task_to_acm[run_backend_task] = backend
-                    task_list.append(run_backend_task)
+                    pending_tasks.append(run_backend_task)
 
             # Cleanup any servers in the listing that no longer exist
             removed_backend_names = set()
@@ -128,7 +126,7 @@ class MCOrchestrator(AbstractAsyncContextManager):
             # Do nothing until the config changes or a proxy or server task errors out
             while not self._config_changed.is_set():
                 monitor_config_task = asyncio.create_task(self._config_changed.wait())
-                done, task_list = await asyncio.wait([monitor_config_task] + task_list, return_when=asyncio.FIRST_COMPLETED)
+                done, pending_tasks = await asyncio.wait([monitor_config_task] + pending_tasks, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     if task is not monitor_config_task:
                         try:
