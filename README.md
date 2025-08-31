@@ -38,10 +38,10 @@ minecraft-orchestrator/
 # TODOs
 - Create server.properties if it doesn't exist
 - Use dynamic port allocation for the backend
-- Figure out how to create a less privileged user per server and start the server processes as that user
-- Investigate why, when bug causes multiple java processes to open, only 1 gets cleaned up by AsyncExitStack
-- Track PR to mctools: https://github.com/OwenCochell/mctools/pull/18
+- Figure out how to create a less privileged user per backend server and start the server processes as that user
+- Consider re-writing backend as a single class that is started and stopped dynamically by orchestrator when the proxy received a signal
 
 # DONE
-- Figure out how to use RCON
-- Add core API to start/stop servers
+- [DONE] Track PR to mctools: https://github.com/OwenCochell/mctools/pull/18
+- [DONE] Figure out how to use RCON
+- [DONE] Add core API to start/stop servers
