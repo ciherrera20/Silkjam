@@ -30,7 +30,7 @@ class MCProtocolError(ValueError):
         self.data = data
 
 class PacketReader:
-    DEFAULT_BUFFER_SIZE = 1 << 16
+    DEFAULT_BUFFER_SIZE = 1 << 12
     MIN_READ_SIZE = 1 << 10
 
     ############################################# Decode functions #############################################

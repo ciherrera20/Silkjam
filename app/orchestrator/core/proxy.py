@@ -6,6 +6,7 @@ from contextlib import suppress, AbstractAsyncContextManager, AsyncExitStack
 #
 # Project imports
 #
+from .baseacm import BaseAsyncContextManager
 from .backend import MCBackend
 from .protocol import (
     PacketReader,
@@ -18,14 +19,14 @@ logger = logging.getLogger(__name__)
 
 HOSTNAME = os.environ["HOSTNAME"]
 
-class MCProxy(AbstractAsyncContextManager):
+class MCProxy(BaseAsyncContextManager):
     def __init__(self, listing):
+        super().__init__()
         self.name = listing["name"]
         self.port = listing["port"]
+        self.proxy_server: asyncio.Server
         self._backends = []
         self.subdomain_map = {}
-        self.proxy_server = None
-        self._acm_stack = None
 
         self.log = PrefixLoggerAdapter(logger, self.name)
 
@@ -38,17 +39,15 @@ class MCProxy(AbstractAsyncContextManager):
         self._backends = new_backends
         self.subdomain_map = {server.subdomain: server for server in self._backends}  # Subdomain -> server
 
-    async def __aenter__(self):
-        if self._acm_stack is None:
-            self.log.debug("Entering proxy")
-            self._acm_stack = AsyncExitStack()
+    async def _start(self):
+        self.log.debug("Starting proxy server on port %s", self.port)
+        self.proxy_server = await asyncio.start_server(self._handle_client, "0.0.0.0", self.port)
+        await self.proxy_server.__aenter__()
 
-            self.log.info("Starting proxy server on port %s", self.port)
-            self.proxy_server = await asyncio.start_server(self._handle_client, "0.0.0.0", self.port)
-
-            # Enter context manager stack
-            await self._acm_stack.__aenter__()
-        return self
+    async def _stop(self, *args):
+        self.log.info("Stopping proxy server")
+        await self.proxy_server.__aexit__(*args)
+        del self.proxy_server
 
     async def _handle_handshake(self, packet_reader: PacketReader, packet_writer: PacketWriter) -> MCBackend | None:
         forward = False  # Whether or not to forward to the backend
@@ -210,16 +209,9 @@ class MCProxy(AbstractAsyncContextManager):
             writer.close()
             await writer.wait_closed()
 
-    async def __aexit__(self, *args):
-        if self._acm_stack is not None:
-            self.log.info("Closing proxy server")
-
-            # Exit all open context managers
-            await self._acm_stack.__aexit__(*args)
-
-            self._acm_stack = None
-            self.log.debug("Exiting proxy")
-        return False
-
     async def serve_forever(self):
+        await self.start()
         await self.proxy_server.serve_forever()
+
+    def __repr__(self):
+        return f"MCProxy(\'{self.name}\')"

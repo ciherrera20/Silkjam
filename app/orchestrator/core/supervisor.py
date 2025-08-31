@@ -352,7 +352,7 @@ class Supervisor(BaseAsyncContextManager):
     async def _supervise_until(
             self,
             events: Iterable[asyncio.Event]=[],
-            return_when: str=FIRST_EVENT_OR_UNIT
+            return_when: str=FIRST_EVENT
         ) -> tuple[
             tuple[
                 set[asyncio.Event],
@@ -372,7 +372,6 @@ class Supervisor(BaseAsyncContextManager):
             monitor_command_queue_task = asyncio.create_task(self._command_queue.get())
             pending_event_tasks = {asyncio.create_task(event.wait()): event for event in pending_events}  # task -> event
 
-            self.log.debug('Starting supervise until with %s pending event tasks, %s running unit tasks, and command queue empty=%s', len(pending_event_tasks), len(self._running_unit_tasks), self._command_queue.empty())
             try:
                 ret = False
                 while not ret:
@@ -429,19 +428,17 @@ class Supervisor(BaseAsyncContextManager):
                 monitor_command_queue_task.cancel()
                 with suppress(asyncio.CancelledError):
                     self._handle_command_queue(await monitor_command_queue_task, empty=False)
-                    self.log.debug('Handling pending command')
                 for t in pending_event_tasks:
                     t.cancel()
-                self.log.debug('Canceling %s pending event tasks', len(pending_event_tasks))
                 await asyncio.gather(*pending_event_tasks, return_exceptions=True)
 
-            self.log.debug('Supervise until condition met: %s', return_when)
+            self.log.debug('Supervise until return condition met: %s', return_when)
             return (done_events, done_units), (pending_events, pending_units)
 
     async def supervise_until(
         self,
         events: Iterable[asyncio.Event]=[],
-        return_when: str=FIRST_EVENT_OR_UNIT
+        return_when: str=FIRST_EVENT
     ) -> tuple[
         tuple[
             set[asyncio.Event],
