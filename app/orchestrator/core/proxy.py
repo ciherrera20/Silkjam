@@ -145,6 +145,7 @@ class MCProxy(BaseAsyncContextManager):
         ):
         # Forward traffic to actual minecraft server
         self.log.debug("Starting port forwarding to %s", backend.name)
+        backend.incr_online_players()
         try:
             async def forward(initial_data, src_reader, dst_writer, direction_msg=None):
                 if direction_msg:
@@ -165,12 +166,10 @@ class MCProxy(BaseAsyncContextManager):
                 finally:
                     dst_writer.close()
 
-            forward_tasks = [
-                asyncio.create_task(forward(initial_data, client_reader, backend_writer, f"client -> {backend.name}")), # client -> proxy -> backend
-                asyncio.create_task(forward(b"", backend_reader, client_writer, f"{backend.name} -> client")), # backend -> proxy -> client
-            ]
-            backend.incr_online_players()
-            await asyncio.gather(*forward_tasks)
+            await asyncio.gather(
+                forward(initial_data, client_reader, backend_writer, f"client -> {backend.name}"), # client -> proxy -> backend
+                forward(b"", backend_reader, client_writer, f"{backend.name} -> client"), # backend -> proxy -> client
+            )
         except Exception as err:
             self.log.exception("Exception caught while forwarding to backend: %s", err)
         finally:
