@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from contextlib import suppress, AbstractAsyncContextManager, AsyncExitStack
+from contextlib import suppress
 
 #
 # Project imports
@@ -98,7 +98,7 @@ class MCProxy(BaseAsyncContextManager):
                                         },
                                         "players": {
                                             "max": backend.max_players,
-                                            "online": -1,
+                                            "online": backend.online_players,
                                             "sample": []
                                         },	
                                         "description": {
@@ -141,10 +141,10 @@ class MCProxy(BaseAsyncContextManager):
             client_writer: asyncio.StreamWriter,
             backend_reader: asyncio.StreamReader,
             backend_writer: asyncio.StreamWriter,
-            backend_name: str
+            backend: MCBackend
         ):
         # Forward traffic to actual minecraft server
-        self.log.debug("Starting port forwarding to %s", backend_name)
+        self.log.debug("Starting port forwarding to %s", backend.name)
         try:
             async def forward(initial_data, src_reader, dst_writer, direction_msg=None):
                 if direction_msg:
@@ -165,15 +165,18 @@ class MCProxy(BaseAsyncContextManager):
                 finally:
                     dst_writer.close()
 
-            await asyncio.gather(
-                forward(initial_data, client_reader, backend_writer, f"client -> {backend_name}"), # client -> proxy -> backend
-                forward(b"", backend_reader, client_writer, f"{backend_name} -> client"), # backend -> proxy -> client
-            )
+            forward_tasks = [
+                asyncio.create_task(forward(initial_data, client_reader, backend_writer, f"client -> {backend.name}")), # client -> proxy -> backend
+                asyncio.create_task(forward(b"", backend_reader, client_writer, f"{backend.name} -> client")), # backend -> proxy -> client
+            ]
+            backend.incr_online_players()
+            await asyncio.gather(*forward_tasks)
         except Exception as err:
             self.log.exception("Exception caught while forwarding to backend: %s", err)
         finally:
             backend_writer.close()
             await backend_writer.wait_closed()
+            backend.decr_online_players()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         logger.info("Client connected")
@@ -193,16 +196,16 @@ class MCProxy(BaseAsyncContextManager):
                     backend_reader, backend_writer = await asyncio.open_connection("0.0.0.0", backend.port)
                 except ConnectionRefusedError as err:
                     # Backend server is stating, respond with message telling the client to wait
-                    self.log.info("Backend server %s not ready yet, telling client to try again soon", backend.name)
+                    self.log.info("Backend server %s not ready yet, sending waking kick message", backend.name)
                     kick_payload = {
-                        "text": "§eServer is waking up, try again in 30s"
+                        "text": backend.waking_kick_msg
                     }
                     packet_writer.write_json_packet(0, kick_payload)
                     await packet_writer.drain()
                 else:
                     # Backend server is running, forward packets to it
                     initial_data = packet_reader.unparsed.tobytes() + packet_writer.encode_handshake_packet(**handshake)
-                    await self._forward_to_backend(initial_data, reader, writer, backend_reader, backend_writer, backend.name)
+                    await self._forward_to_backend(initial_data, reader, writer, backend_reader, backend_writer, backend)
         except Exception as err:
             self.log.exception("Exception caught while handling client: %s", err)
         finally:

@@ -104,7 +104,7 @@ class MCBackend(Supervisor):
                 self.reload_sleep_timer()
                 self._online_player_change.clear()
             if self.sleep_timer in done_units and done_units[self.sleep_timer] is None:
-                self.log.info("No players connected for %s s, stopping server", self.sleep_timeout)
+                self.log.info("No players connected for %ss, stopping server", self.sleep_timeout)
                 self.set_sleeping()
 
     async def _stop(self, *args):
