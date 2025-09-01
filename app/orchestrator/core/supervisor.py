@@ -139,10 +139,10 @@ class Supervisor(BaseAsyncContextManager):
         # Add unit
         self.log.debug("Adding %s", unit)
         if not stopped:
-            self._units[unit] = Supervisor.State(runfunc, restart, Status.READY)
-            self._command_queue.put_nowait((Supervisor.Command.START, unit))
+            self._units[unit] = self.State(runfunc, restart, Status.READY)
+            self._command_queue.put_nowait((self.Command.START, unit))
         else:
-            self._units[unit] = Supervisor.State(runfunc, restart, Status.STOPPED)
+            self._units[unit] = self.State(runfunc, restart, Status.STOPPED)
         return True
 
     def remove_unit_nowait(
@@ -181,7 +181,7 @@ class Supervisor(BaseAsyncContextManager):
         """
         if unit not in self._units or self._units[unit].pending_stop:
             return False
-        self._command_queue.put_nowait((Supervisor.Command.START, unit))
+        self._command_queue.put_nowait((self.Command.START, unit))
         return True
 
     async def start_unit(self, unit):
@@ -219,7 +219,7 @@ class Supervisor(BaseAsyncContextManager):
         """
         if unit not in self._units:
             return False
-        self._command_queue.put_nowait((Supervisor.Command.STOP, unit))
+        self._command_queue.put_nowait((self.Command.STOP, unit))
         return True
 
     async def stop_unit(self, unit):
@@ -378,14 +378,14 @@ class Supervisor(BaseAsyncContextManager):
                     self.log.debug("Discarding command %s %s", command.name, unit)
                 else:
                     self.log.debug("Handling command %s %s", command.name, unit)
-                    if command == Supervisor.Command.START:
+                    if command == self.Command.START:
                         if unit not in self._units:
                             self.log.debug("%s has not been added or has been removed, ignoring START command", unit)
                         elif self._units[unit].task is not None:
                             self.log.debug("%s is running, ignoring START command", unit)
                         else:
                             self._start_unit(unit)
-                    elif command == Supervisor.Command.STOP:
+                    elif command == self.Command.STOP:
                         if unit not in self._units:
                             self.log.debug("%s has not been added or has been removed, ignoring STOP command", unit)
                         elif self._units[unit].task is None:
@@ -446,7 +446,7 @@ class Supervisor(BaseAsyncContextManager):
                                 self.log.info('%s is done with status %s', unit, state.status.name)
                                 if state.restart and state.status == Status.READY:
                                     self.log.info('Restarting %s', unit)
-                                    self._command_queue.put_nowait((Supervisor.Command.START, unit))
+                                    self._command_queue.put_nowait((self.Command.START, unit))
                                 state.task = None
                             del self._running_unit_tasks[t]
 
