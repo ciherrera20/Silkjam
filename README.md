@@ -39,9 +39,14 @@ minecraft-orchestrator/
 - Create server.properties if it doesn't exist
 - Use dynamic port allocation for the backend
 - Figure out how to create a less privileged user per backend server and start the server processes as that user
-- Consider re-writing backend as a single class that is started and stopped dynamically by orchestrator when the proxy received a signal
+- Add unit to constantly ping server process and read the number of players connected, as well as the protocol version
+- When backend server is running, forward pings to it
+- Figure out why when spamming connect as the server starts, all future connects just show Server disconnected message
 
 # DONE
 - [DONE] Track PR to mctools: https://github.com/OwenCochell/mctools/pull/18
 - [DONE] Figure out how to use RCON
 - [DONE] Add core API to start/stop servers
+- [DONE] Add server sleeping after a certain amount of time with no players
+- [DONE] Consider re-writing backend as a single class that is started and stopped dynamically by orchestrator when the proxy received a signal
+    - Decided against. Its easier to have a backend class that is always running and supervises its own set of units.
