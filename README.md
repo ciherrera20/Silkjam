@@ -40,7 +40,10 @@ minecraft-orchestrator/
 - Use dynamic port allocation for the backend
 - Figure out how to create a less privileged user per backend server and start the server processes as that user
 - Add unit to constantly ping server process and read the number of players connected, as well as the protocol version
+- Add capability to backup to remote drive
+- Add ability to disable sleep timeout
 - When backend server is running, forward pings to it
+    - [DONE] Figure out when backend server is ready to accept players
 - Figure out why when spamming connect as the server starts, all future connects just show Server disconnected message
 
 # DONE
