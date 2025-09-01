@@ -67,6 +67,9 @@ class Supervisor(BaseAsyncContextManager):
         pending_stop: bool = False
         result: Any = None
 
+        done_starting: asyncio.Event = asyncio.Event()
+        done_stopping: asyncio.Event = asyncio.Event()
+
     class Command(IntEnum):
         """Internal commands used by the Supervisor"""
         START = 0
@@ -162,7 +165,7 @@ class Supervisor(BaseAsyncContextManager):
         del self._units[unit]
         return True
 
-    def start_unit(
+    def start_unit_nowait(
             self,
             unit: AsyncContextManager,
         ) -> bool:
@@ -181,6 +184,26 @@ class Supervisor(BaseAsyncContextManager):
         self._command_queue.put_nowait((Supervisor.Command.START, unit))
         return True
 
+    async def start_unit(self, unit):
+        """Start a unit and wait for it to finish starting while running all
+        other units.
+
+        Args:
+            unit (AsyncContextManager): Unit to start and wait for.
+
+        Returns:
+            bool: Whether the unit was started successfully or not.
+        """
+        if not self.start_unit_nowait(unit):
+            return False
+        state = self._units[unit]
+        state.done_starting.clear()
+        (done_events, _), (_, _) = await self.supervise_until([state.done_starting])
+        if state.done_starting in done_events:
+            return True
+        else:
+            return False
+
     def stop_unit_nowait(
             self,
             unit: AsyncContextManager
@@ -198,6 +221,26 @@ class Supervisor(BaseAsyncContextManager):
             return False
         self._command_queue.put_nowait((Supervisor.Command.STOP, unit))
         return True
+
+    async def stop_unit(self, unit):
+        """Stop a unit and wait for it to finish stopping while running all
+        other units.
+
+        Args:
+            unit (AsyncContextManager): Unit to stop and wait for.
+
+        Returns:
+            bool: Whether the unit was stopped successfully or not.
+        """
+        if not self.stop_unit_nowait(unit):
+            return False
+        state = self._units[unit]
+        state.done_stopping.clear()
+        (done_events, _), (_, _) = await self.supervise_until([state.done_stopping])
+        if state.done_stopping in done_events:
+            return True
+        else:
+            return False
 
     def _start_unit(
             self,
@@ -234,6 +277,8 @@ class Supervisor(BaseAsyncContextManager):
         self.log.debug("Running %s", unit)
         state = self._units[unit]
         state.result = None
+        state.done_starting.clear()
+        state.done_stopping.clear()
 
         try:  # Enter unit
             state.status = Status.ENTERING
@@ -249,6 +294,7 @@ class Supervisor(BaseAsyncContextManager):
             state.result = err
         else:  # Unit entered successfully
             self.log.debug("Finished entering %s", unit)
+            state.done_starting.set()
             try:  # Run unit
                 state.status = Status.RUNNING
                 self.log.debug("Running %s", unit)
@@ -281,10 +327,12 @@ class Supervisor(BaseAsyncContextManager):
                 state.result = err
             else:  # Unit exited successfully
                 self.log.debug("Finished exiting %s", unit)
+                state.done_stopping.set()
             state.status = Status.STOPPED if state.pending_stop else Status.READY
             if not self._lock.locked():
                 del self._running_unit_tasks[state.task]
             state.task = None
+            state.pending_stop = False
         return state.result
 
     def _stop_unit(
@@ -352,7 +400,7 @@ class Supervisor(BaseAsyncContextManager):
     async def _supervise_until(
             self,
             events: Iterable[asyncio.Event]=[],
-            return_when: str=FIRST_EVENT
+            return_when: str=FIRST_EVENT_OR_UNIT
         ) -> tuple[
             tuple[
                 set[asyncio.Event],
@@ -438,7 +486,7 @@ class Supervisor(BaseAsyncContextManager):
     async def supervise_until(
         self,
         events: Iterable[asyncio.Event]=[],
-        return_when: str=FIRST_EVENT
+        return_when: str=FIRST_EVENT_OR_UNIT
     ) -> tuple[
         tuple[
             set[asyncio.Event],
@@ -499,6 +547,23 @@ class Supervisor(BaseAsyncContextManager):
         """Supervises units forever"""
         while True:
             await self.supervise_until()
+
+class Timer(BaseAsyncContextManager):
+    def __init__(self, timeout):
+        super().__init__()
+        self.timeout = timeout
+
+    async def _start(self):
+        pass
+
+    async def _stop(self, *args):
+        pass
+
+    async def wait(self):
+        await asyncio.sleep(self.timeout)
+
+    def __repr__(self):
+        return f"Timer({self.timeout})"
 
 if __name__ == "__main__":
     import random
