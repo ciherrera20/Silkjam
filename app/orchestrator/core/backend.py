@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager, suppress
 #
 from .baseacm import BaseAsyncContextManager
 from .protocol import MCVersion
-from .supervisor import Supervisor
+from .supervisor import Supervisor, Timer
 from utils.logger_adapters import PrefixLoggerAdapter, BytesLoggerAdapter
 
 logger = logging.getLogger(__name__)
@@ -26,17 +26,26 @@ class MCBackend(Supervisor):
         super().__init__()
         self.root = root
         self.name = listing["name"]
+        self.log = PrefixLoggerAdapter(logger, self.name)
+
         self.version = MCVersion(**listing["version"])
         self.subdomain = listing["subdomain"]
+        self.sleep_properties = listing["sleep_properties"]
+        self.sleep_timeout = self.sleep_properties["timeout"]
         self.status = MCBackend.Status.SLEEPING
 
         self.properties = None
         self.icon = None
 
-        self.server_proc: MCServerProc = None
-        self._status_change = asyncio.Event()
+        # Create units to supervise
+        self.server_proc: MCServerProc = MCServerProc(self)
+        self.sleep_timer: Timer = Timer(self.sleep_timeout)
+        self.add_unit(self.server_proc, self.server_proc.monitor, restart=True, stopped=True)
+        self.add_unit(self.sleep_timer, self.sleep_timer.wait, restart=False, stopped=True)
 
-        self.log = PrefixLoggerAdapter(logger, self.name)
+        self._online_players = 0  # Keep track of number of players connected to server
+        self._status_change = asyncio.Event()
+        self._online_player_change: asyncio.Event = asyncio.Event()
 
     async def _start(self):
         await super()._start()
@@ -61,21 +70,42 @@ class MCBackend(Supervisor):
         else:
             self.icon = None
 
+    async def reload_server_proc(self):
+        # Start up or shut down server proc
+        if self.status == MCBackend.Status.RUNNING and not self.server_proc.is_running():
+            self.online_players = 0
+            self.log.debug("Starting server proc")
+            await self.start_unit(self.server_proc)
+        elif self.status == MCBackend.Status.SLEEPING and not self.server_proc.is_sleeping():
+            self.log.debug("Stopping server proc")
+            await self.stop_unit(self.server_proc)
+            self.online_players = 0
+
+    def reload_sleep_timer(self):
+        # Start or stop sleep timer
+        self.log.debug("server_proc is running: %s, online_players: %s", self.server_proc.is_running(), self.online_players)
+        if self.server_proc.is_running() and self.online_players == 0:
+            self.log.debug("Starting sleep timer")
+            self.start_unit_nowait(self.sleep_timer)
+        elif self.server_proc.is_sleeping() or self.online_players > 0:
+            self.log.debug("Stopping sleep timer")
+            self.stop_unit_nowait(self.sleep_timer)
+
     async def serve_forever(self):
         while True:
-            # Start up or shut down server proc
-            if self.status == MCBackend.Status.RUNNING and not self.is_running():
-                self.server_proc = MCServerProc(self)
-                self.add_unit(self.server_proc, self.server_proc.monitor)
-            elif self.status == MCBackend.Status.SLEEPING and not self.is_sleeping():
-                self.remove_unit_nowait(self.server_proc)
-                self.server_proc = None
-
             # Wait until the config changes or a proxy or server task is canceled or errors out
-            (done_events, _), (_, _) = await self.supervise_until([self._status_change])
+            (done_events, done_units), (_, _) = await self.supervise_until([self._status_change, self._online_player_change])
             if self._status_change in done_events:
                 self.log.debug("Status change requested")
+                await self.reload_server_proc()
                 self._status_change.clear()
+            if self._online_player_change in done_events:
+                self.log.debug("Online players is %s", self.online_players)
+                self.reload_sleep_timer()
+                self._online_player_change.clear()
+            if self.sleep_timer in done_units and done_units[self.sleep_timer] is None:
+                self.log.info("No players connected for %s s, stopping server", self.sleep_timeout)
+                self.set_sleeping()
 
     async def _stop(self, *args):
         await super()._stop(*args)
@@ -84,34 +114,68 @@ class MCBackend(Supervisor):
     def port(self):
         if "server-port" in self.properties:
             return int(self.properties["server-port"].data)
-    
-    @property
-    def max_players(self):
-        if "max-players" in self.properties:
-            return int(self.properties["max-players"].data)
 
     @property
     def motd(self):
         if "motd" in self.properties:
-            return self.properties["motd"].data
+            motd_prop = self.properties["motd"].data
+        else:
+            motd_prop = None
+        if self.server_proc.is_running():
+            return motd_prop
+        else:
+            return self.sleep_properties.get("motd") or motd_prop
 
-    def is_sleeping(self):
-        return self.server_proc is None or self.server_proc.returncode is not None
+    @property
+    def online_players(self):
+        if self.server_proc.is_running():
+            return self._online_players
+        else:
+            return self.sleep_properties.get("online-players") or self._online_players
+
+    @online_players.setter
+    def online_players(self, value):
+        self._online_players = value
+        self._online_player_change.set()
+
+    @property
+    def max_players(self):
+        if "max-players" in self.properties:
+            max_players_prop = int(self.properties["max-players"].data)
+        else:
+            max_players_prop = None
+        if self.server_proc.is_running():
+            return max_players_prop
+        else:
+            return self.sleep_properties.get("max-players") or max_players_prop
+
+    @property
+    def waking_kick_msg(self):
+        return self.sleep_properties.get("waking-kick-msg")
 
     def is_running(self):
-        return self.server_proc is not None and self.server_proc.returncode is None
+        return self.server_proc.is_running()
+
+    def is_sleeping(self):
+        return self.server_proc.is_sleeping()
 
     def set_sleeping(self):
-        if not self.is_sleeping():
+        if not self.server_proc.is_sleeping():
             self.log.debug("Set sleeping")
             self.status = MCBackend.Status.SLEEPING
             self._status_change.set()
 
     def set_running(self):
-        if not self.is_running():
+        if not self.server_proc.is_running():
             self.log.debug("Set running")
             self.status = MCBackend.Status.RUNNING
             self._status_change.set()
+
+    def incr_online_players(self):
+        self.online_players += 1
+
+    def decr_online_players(self):
+        self.online_players -= 1
 
     def __repr__(self):
         return f"MCBackend(\'{self.name}\')"
@@ -128,9 +192,11 @@ class MCServerProc(BaseAsyncContextManager):
         self.sigterm_timeout = sigterm_timeout
         self.server_proc: asyncio.Process
 
-    @property
-    def returncode(self):
-        return self.server_proc.returncode
+    def is_sleeping(self):
+        return not self._started or self.server_proc.returncode is not None
+
+    def is_running(self):
+        return self._started and self.server_proc.returncode is None
 
     async def _start(self):
         await super()._start()
