@@ -1,3 +1,4 @@
+import re
 import signal
 import base64
 import asyncio
@@ -5,7 +6,7 @@ import logging
 import jproperties
 from pathlib import Path
 from enum import IntEnum
-from contextlib import asynccontextmanager, suppress
+from contextlib import suppress
 
 #
 # Project imports
@@ -13,6 +14,7 @@ from contextlib import asynccontextmanager, suppress
 from .baseacm import BaseAsyncContextManager
 from .protocol import MCVersion
 from .supervisor import Supervisor, Timer
+from .client import MCClient
 from utils.logger_adapters import PrefixLoggerAdapter, BytesLoggerAdapter
 
 logger = logging.getLogger(__name__)
@@ -40,7 +42,7 @@ class MCBackend(Supervisor):
         # Create units to supervise
         self.server_proc: MCServerProc = MCServerProc(self)
         self.sleep_timer: Timer = Timer(self.sleep_timeout)
-        self.add_unit(self.server_proc, self.server_proc.monitor, restart=True, stopped=True)
+        self.add_unit(self.server_proc, self.server_proc.monitor, restart=True, stopped=False)
         self.add_unit(self.sleep_timer, self.sleep_timer.wait, restart=False, stopped=True)
 
         self._online_players = 0  # Keep track of number of players connected to server
@@ -181,6 +183,12 @@ class MCBackend(Supervisor):
         return f"MCBackend(\'{self.name}\')"
 
 class MCServerProc(BaseAsyncContextManager):
+    STARTING_SERVER_REGEX = re.compile(r"^.*:(\d{5}).*$")
+    DONE_REGEX = re.compile(r"^.*Done \(.*$")
+
+    STDOUT_LOG_LEVEL = logging.DEBUG
+    STDERR_LOG_LEVEL = logging.ERROR
+
     def __init__(self, backend, stop_timeout=90, sigint_timeout=90, sigterm_timeout=90):
         super().__init__()
         self.backend = backend
@@ -209,6 +217,23 @@ class MCServerProc(BaseAsyncContextManager):
             cwd=self.root
         )
         self.log.info("Starting minecraft server process with pid %s", self.server_proc.pid)
+
+        log_stderr_task = asyncio.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))
+        wait_until_done_initializing_task = asyncio.create_task(self.wait_until_done_initializing())
+
+        done, pending = await asyncio.wait([wait_until_done_initializing_task, log_stderr_task], return_when=asyncio.FIRST_COMPLETED)
+        if log_stderr_task in done:
+            self.log.error("Server process closed stderr")
+        if wait_until_done_initializing_task in pending:
+            self.log.error("Did not finish initializing server")
+        else:
+            self.log.info("Minecraft server ready to accept players")
+
+        # Cancel remaining task(s)
+        for task in pending:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     async def _stop(self, *args):
         self.log.info("Closing minecraft server process")
@@ -251,35 +276,72 @@ class MCServerProc(BaseAsyncContextManager):
             self.log.debug("Minecraft server process exited after SIGKILL")
         await super()._stop(*args)
 
+    async def read_pipe(self, pipe):
+        msg = b""
+        while True:
+            try:
+                msg += await pipe.readuntil()
+            except asyncio.LimitOverrunError as err:
+                msg += await pipe.read(err.consumed)
+            except asyncio.IncompleteReadError as err:
+                msg += err.partial
+            else:
+                if len(msg) == 0:
+                    break
+                yield msg.decode("utf-8")
+                msg = b""
+
+    async def read_stdout_until_done_initializing(self):
+        pipe_logger = PrefixLoggerAdapter(f"stdout") | self.log
+        async for msg in self.read_pipe(self.server_proc.stdout):
+            pipe_logger.log(self.STDOUT_LOG_LEVEL, msg)
+            if m := self.STARTING_SERVER_REGEX.match(msg):
+                if m.group(1) == str(self.backend.port):
+                    self.log.debug("Read server starting msg")
+                    break
+
+        async for msg in self.read_pipe(self.server_proc.stdout):
+            pipe_logger.log(self.STDOUT_LOG_LEVEL, msg)
+            if self.DONE_REGEX.match(msg):
+                self.log.debug("Read done msg")
+                break
+
+    async def ping_server_until_done_initializing(self, ping_interval=1):
+        while True:
+            self.log.debug("Sending server listing ping...")
+            async with MCClient("0.0.0.0", self.backend.port) as client:
+                with suppress(OSError):
+                    await client.request_status()
+                    break
+            asyncio.sleep(ping_interval)
+        self.log.debug("Received server listing ping response")
+
+    async def wait_until_done_initializing(self, stdout_timeout=60, ping_timeout=60, ping_interval=1):
+        try:
+            await asyncio.wait_for(self.read_stdout_until_done_initializing(), stdout_timeout)
+        except asyncio.TimeoutError:
+            self.log.error("Did not receive server started log")
+
+        try:
+            await asyncio.wait_for(self.ping_server_until_done_initializing(ping_interval), ping_timeout)
+        except asyncio.TimeoutError:
+            self.log.error("Could not ping server")
+            raise
+        self.log.debug("Server finished initializing")
+
+    async def log_pipe(self, pipe, pipe_name="pipe", level=logging.DEBUG):
+        pipe_logger = PrefixLoggerAdapter(f"{pipe_name}") | self.log
+        async for msg in self.read_pipe(pipe):
+            pipe_logger.log(level, msg)
+
     async def monitor(self):
         self.log.debug("Starting backend monitor task for pid %s", self.server_proc.pid)
-        async def log_pipe(pipe, pipe_name="pipe", level=logging.DEBUG):
-            pipe_logger = BytesLoggerAdapter() | PrefixLoggerAdapter(f"{pipe_name}") | self.log
-            task_logger = PrefixLoggerAdapter(f"{pipe_name} logger") | self.log
-            task_logger.debug("Starting backend monitor logging task")
-            while True:
-                msg = None
-                try:
-                    msg = await pipe.readuntil()
-                except asyncio.LimitOverrunError as err:
-                    task_logger.warning("LimitOverrunError caught after %s bytes", err.consumed)
-                    msg = await pipe.read(err.consumed)
-                except asyncio.IncompleteReadError as err:
-                    task_logger.warning("IncompleteReadError caught after %s bytes", len(err.partial))
-                    msg = err.partial
-                except asyncio.CancelledError:
-                    task_logger.debug("Task canceled")
-                    break
-                except Exception as err:
-                    task_logger.exception("Exception caught: %s", err)
-                if msg is not None:
-                    if len(msg) == 0:
-                        task_logger.debug("Pipe closed")
-                        break
-                    pipe_logger.log(level, msg)
-            task_logger.debug("Exiting")
         try:
-            await asyncio.gather(log_pipe(self.server_proc.stdout, "stdout"), log_pipe(self.server_proc.stderr, "stderr"))
+            await asyncio.gather(
+                self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL),
+                self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL)
+            )
+            self.log.debug("Server process (pid %s) stopped communication", self.server_proc.pid)
         except asyncio.CancelledError:
             self.log.debug("Backend monitor task canceled")
 
