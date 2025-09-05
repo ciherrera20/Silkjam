@@ -1,7 +1,7 @@
 if __name__ == "__main__":
     import os, sys, subprocess
     ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True).stdout.decode("utf-8").strip()
-    sys.path.append(os.path.join(ROOT, 'app', 'orchestrator'))
+    sys.path.append(os.path.join(ROOT, "app", "orchestrator"))
 
 import asyncio
 from enum import IntEnum
@@ -37,11 +37,13 @@ class Supervisor(BaseAsyncContextManager):
     Lifecycle:
     A unit can have one of the following statuses:
     - READY: Unit is waiting to be started.
-    - ENTERING: Unit's `aenter` coroutine is running.
+    - ENTERING: Unit's `aenter` coroutine is running, i.e. the unit is
+        starting.
     - RUNNING: Unit's main coroutine is running.
-    - EXITING: Unit's `aexit` coroutine is running.
-    - STOPPED: Unit is stopped and will not be started again (e.g. after
-        failure or non-restart).
+    - EXITING: Unit's `aexit` coroutine is running, i.e. the unit is
+        stopping.
+    - STOPPED: Unit is stopped and will not be restarted automatically
+        (e.g. if restart=False, or the unit was stopped explicitly).
 
     Units move through the statuses as follows:
         READY -> ENTERING -> RUNNING -> EXITING -> (READY | STOPPED)
@@ -53,8 +55,9 @@ class Supervisor(BaseAsyncContextManager):
     later retrieval. Only `KeyboardInterrupt` and `SystemExit` propagate.
 
     The supervisor is itself an asynchronous context manager: upon
-    exiting, all running units are canceled at whatever stage of their
-    lifecycle they are in. Afterwards, the supervisor can be reused.
+    exiting, all running units are stopped. A unit will be interrupted if
+    it is entering or running, but not if it is exiting: it will be
+    allowed to exit fully. Afterwards, the supervisor can be reused.
     """
 
     @dataclass
@@ -64,28 +67,42 @@ class Supervisor(BaseAsyncContextManager):
         restart: bool
         status: Status = Status.READY
         task: asyncio.Task = None
-        pending_stop: bool = False
         result: Any = None
 
-        done_starting: asyncio.Event = asyncio.Event()
-        done_stopping: asyncio.Event = asyncio.Event()
+        # Set to true when a START command is in the queue, or the unit is
+        # starting after the START command has been processed.
+        pending_start: bool = False
+
+        # Set to true when a STOP command is in the queue, or the unit is
+        # stopping after the STOP command has been processed. However, it is
+        # not set when a unit finishes running on its own.
+        pending_stop: bool = False
+        force_pending_stop: bool = False  # Whether or not to force a pending stop.
+
+        # Set when the unit's enter is finished. Cleared when the unit starts
+        # and when it finishes.
+        done_entering: asyncio.Event = asyncio.Event()
+
+        # Set when the unit's exit is finished. Cleared when the unit starts.
+        done_exiting: asyncio.Event = asyncio.Event()
 
     class Command(IntEnum):
         """Internal commands used by the Supervisor"""
         START = 0
         STOP = 1
 
-    FIRST_EVENT = 'FIRST_EVENT'
-    FIRST_UNIT = 'FIRST_UNIT'
-    FIRST_EVENT_OR_UNIT = 'FIRST_EVENT_OR_UNIT'
-    ALL_EVENTS = 'ALL_EVENTS'
-    ALL_UNITS = 'ALL_UNITS'
-    ALL_EVENTS_AND_UNITS = 'ALL_EVENTS_AND_UNITS'
+    FIRST_EVENT = "FIRST_EVENT"
+    FIRST_UNIT = "FIRST_UNIT"
+    FIRST_EVENT_OR_UNIT = "FIRST_EVENT_OR_UNIT"
+    ALL_EVENTS = "ALL_EVENTS"
+    ALL_UNITS = "ALL_UNITS"
+    ALL_EVENTS_AND_UNITS = "ALL_EVENTS_AND_UNITS"
 
     def __init__(self):
+        """Initialize supervisor"""
         super().__init__()
         self.stack: AsyncExitStack
-        self.log = PrefixLoggerAdapter(logger, 'supervisor')
+        self.log = PrefixLoggerAdapter(logger, "supervisor")
 
         self._units: dict[AsyncContextManager, Supervisor.State] = {}  # unit -> Supervisor.State
         self._running_unit_tasks: dict[asyncio.Task, AsyncContextManager] = {}  # task -> unit
@@ -101,146 +118,12 @@ class Supervisor(BaseAsyncContextManager):
     async def _stop(self, *args):
         """Exit supervisor context"""
         self.log.info("Exiting")
-        self._handle_command_queue(allowed={})
-        for unit, state in self._units.items():
-            if state.task is not None:
-                self._stop_unit(unit)
-        await asyncio.gather(*self._running_unit_tasks)
+        for unit in self._units:
+            self.stop_unit_nowait(unit, force=True)
+        if len(self._running_unit_tasks) > 0 or not self._command_queue.empty():
+            await self._supervise_until(return_when=self.ALL_UNITS)
         await self.stack.__aexit__(*args)
         del self.stack
-
-    def add_unit(
-            self,
-            unit: AsyncContextManager,
-            runfunc: Callable[[], Coroutine[Any, Any, None]],
-            restart: bool = True,
-            stopped: bool = False
-        ) -> bool:
-        """Add a unit. Can be called before outside of the supervisor's
-        context. If the unit has already been added, nothing happens.
-
-        Args:
-            unit (AsyncContextManager): Unit to add.
-            runfunc (Callable[[], Coroutine[Any, Any, None]]): Unit's main
-                coroutine that runs within the unit's context and executes
-                whatever functionality the unit is meant to perform.
-            restart (bool, optional): Whether to restart the unit when it
-                exits. Defaults to True.
-            stopped (bool, optional): Whether to add the unit as stopped,
-                in which case it must be explicitly started before it first
-                runs. Defaults to False.
-
-        Returns:
-            bool: Whether the unit was added or not.
-        """
-        if unit in self._units:
-            return False
-
-        # Add unit
-        self.log.debug("Adding %s", unit)
-        if not stopped:
-            self._units[unit] = self.State(runfunc, restart, Status.READY)
-            self._command_queue.put_nowait((self.Command.START, unit))
-        else:
-            self._units[unit] = self.State(runfunc, restart, Status.STOPPED)
-        return True
-
-    def remove_unit_nowait(
-            self,
-            unit: AsyncContextManager
-        ) -> bool:
-        """Remove a unit. Can be called before outside of the supervisor's
-        context. If the unit has not been added, or is still running, nothing
-        happens.
-
-        Args:
-            unit (AsyncContextManager): Unit to remove.
-
-        Returns:
-            bool: Whether the unit was removed or not.
-        """
-        if unit not in self._units or self._units[unit].task is not None:
-            return False
-        self.log.debug("Removing %s", unit)
-        del self._units[unit]
-        return True
-
-    def start_unit_nowait(
-            self,
-            unit: AsyncContextManager,
-        ) -> bool:
-        """Schedules a unit to be started by the supervisor. If the
-        unit has not been added or is currently being stopped, nothing
-        happens.
-
-        Args:
-            unit (AsyncContextManager): Unit to start.
-
-        Returns:
-            bool: Whether the unit will be started or not.
-        """
-        if unit not in self._units or self._units[unit].pending_stop:
-            return False
-        self._command_queue.put_nowait((self.Command.START, unit))
-        return True
-
-    async def start_unit(self, unit):
-        """Start a unit and wait for it to finish starting while running all
-        other units.
-
-        Args:
-            unit (AsyncContextManager): Unit to start and wait for.
-
-        Returns:
-            bool: Whether the unit was started successfully or not.
-        """
-        if not self.start_unit_nowait(unit):
-            return False
-        state = self._units[unit]
-        state.done_starting.clear()
-        (done_events, _), (_, _) = await self.supervise_until([state.done_starting])
-        if state.done_starting in done_events:
-            return True
-        else:
-            return False
-
-    def stop_unit_nowait(
-            self,
-            unit: AsyncContextManager
-        ) -> bool:
-        """Schedules a unit to be stopped by the supervisor. If the unit has
-        not been added, nothing happens.
-
-        Args:
-            unit (AsyncContextManager): Unit to stop.
-
-        Returns:
-            bool: Whether or not the the unit will be stopped.
-        """
-        if unit not in self._units:
-            return False
-        self._command_queue.put_nowait((self.Command.STOP, unit))
-        return True
-
-    async def stop_unit(self, unit):
-        """Stop a unit and wait for it to finish stopping while running all
-        other units.
-
-        Args:
-            unit (AsyncContextManager): Unit to stop and wait for.
-
-        Returns:
-            bool: Whether the unit was stopped successfully or not.
-        """
-        if not self.stop_unit_nowait(unit):
-            return False
-        state = self._units[unit]
-        state.done_stopping.clear()
-        (done_events, _), (_, _) = await self.supervise_until([state.done_stopping])
-        if state.done_stopping in done_events:
-            return True
-        else:
-            return False
 
     def _start_unit(
             self,
@@ -277,16 +160,25 @@ class Supervisor(BaseAsyncContextManager):
         self.log.debug("Running %s", unit)
         state = self._units[unit]
         state.result = None
-        state.done_starting.clear()
-        state.done_stopping.clear()
+        state.done_exiting.clear()
+        canceled = False  # Whether or not the unit was canceled at any point
 
         try:  # Enter unit
+            state.pending_start = False
             state.status = Status.ENTERING
+
+            # Handle forced pending stops before entering
+            if state.pending_stop and state.force_pending_stop:
+                self.log.info("%s force stopped before entering", unit)
+                self._stop_unit(unit)
+                await asyncio.sleep(0)
+
             self.log.debug("Entering %s", unit)
             await self.stack.enter_async_context(unit)
         except BaseException as err:  # Enter failed
             if isinstance(err, asyncio.CancelledError):
                 self.log.error("%s canceled while entering", unit)
+                canceled = True
             else:
                 self.log.exception("Exception caught while entering %s: %s", unit, err)
             if isinstance(KeyboardInterrupt, SystemExit):
@@ -294,14 +186,22 @@ class Supervisor(BaseAsyncContextManager):
             state.result = err
         else:  # Unit entered successfully
             self.log.debug("Finished entering %s", unit)
-            state.done_starting.set()
+            state.done_entering.set()
             try:  # Run unit
                 state.status = Status.RUNNING
+
+                # Handle pending stops after entering
+                if state.pending_stop:
+                    self.log.info("%s stopped before running", unit)
+                    self._stop_unit(unit)
+                    await asyncio.sleep(0)
+
                 self.log.debug("Running %s", unit)
                 state.result = await state.runfunc()
             except BaseException as err:  # Run failed
                 if isinstance(err, asyncio.CancelledError):
                     self.log.error("%s canceled", unit)
+                    canceled = True
                 else:
                     self.log.exception("Exception caught while running %s: %s", unit, err)
                 if isinstance(KeyboardInterrupt, SystemExit):
@@ -311,6 +211,7 @@ class Supervisor(BaseAsyncContextManager):
                 self.log.debug("Finished running %s", unit)
         finally:  # Unit finished running or failed
             try:  # Exit unit
+                state.pending_stop = state.force_pending_stop = False
                 state.status = Status.EXITING
                 self.log.debug("Exiting %s", unit)
                 if isinstance(state.result, BaseException):  # Propagate exception to unit's aexit
@@ -320,6 +221,7 @@ class Supervisor(BaseAsyncContextManager):
             except BaseException as err:  # Exit failed
                 if isinstance(err, asyncio.CancelledError):
                     self.log.error("%s canceled while exiting", unit)
+                    canceled = True
                 else:
                     self.log.exception("Exception caught while exiting %s: %s", unit, err)
                 if isinstance(KeyboardInterrupt, SystemExit):
@@ -327,12 +229,12 @@ class Supervisor(BaseAsyncContextManager):
                 state.result = err
             else:  # Unit exited successfully
                 self.log.debug("Finished exiting %s", unit)
-                state.done_stopping.set()
-            state.status = Status.STOPPED if state.pending_stop else Status.READY
+                state.done_exiting.set()
+            state.status = Status.STOPPED if canceled else Status.READY
             if not self._lock.locked():
                 del self._running_unit_tasks[state.task]
             state.task = None
-            state.pending_stop = False
+            state.done_entering.clear()
         return state.result
 
     def _stop_unit(
@@ -351,12 +253,10 @@ class Supervisor(BaseAsyncContextManager):
         self.log.debug("Stopping %s", unit)
         state = self._units[unit]
         state.task.cancel()
-        state.pending_stop = True
 
     def _handle_command_queue(
             self,
             item: tuple[Command, AsyncContextManager]=None,
-            empty: bool=True,
             allowed: set[Command]={Command.START, Command.STOP}
         ):
         """Handles executing commands in the command queue.
@@ -364,8 +264,6 @@ class Supervisor(BaseAsyncContextManager):
         Args:
             item (tuple[Command, AsyncContextManager], optional): Command to
                 start with. Defaults to None.
-            empty (bool, optional): Whether or not to empty the command queue.
-                Defaults to True.
             allowed (dict, optional): Commands to allow. Defaults to
                 {Command.START, Command.STOP}.
         """
@@ -380,22 +278,34 @@ class Supervisor(BaseAsyncContextManager):
                     self.log.debug("Handling command %s %s", command.name, unit)
                     if command == self.Command.START:
                         if unit not in self._units:
-                            self.log.debug("%s has not been added or has been removed, ignoring START command", unit)
-                        elif self._units[unit].task is not None:
-                            self.log.debug("%s is running, ignoring START command", unit)
+                            raise RuntimeError(f"{unit} has not been added or has been removed")
                         else:
-                            self._start_unit(unit)
+                            state = self._units[unit]
+                            if state.task is not None:
+                                raise RuntimeError(f"{unit} is already running")
+                            else:
+                                self._start_unit(unit)
                     elif command == self.Command.STOP:
                         if unit not in self._units:
-                            self.log.debug("%s has not been added or has been removed, ignoring STOP command", unit)
-                        elif self._units[unit].task is None:
-                            self.log.debug("%s is not running, ignoring STOP command", unit)
+                            raise RuntimeError(f"{unit} has not been added or has been removed")
                         else:
-                            self._stop_unit(unit)
-                if empty:
-                    item = self._command_queue.get_nowait()
-                else:
-                    break
+                            state = self._units[unit]
+                            if state.pending_start:
+                                if state.force_pending_stop:
+                                    self.log.debug("%s is pending start, scheduling forced STOP for when it starts", unit)
+                                else:
+                                    self.log.debug("%s is pending start, scheduling STOP for after it finishes starting", unit)
+                            elif state.status == Status.ENTERING:
+                                if state.force_pending_stop:
+                                    self.log.debug("%s is currently starting, forcing STOP", unit)
+                                    self._stop_unit(unit)
+                                else:
+                                    self.log.debug("%s is currently starting, scheduling STOP for after it finishes starting", unit)
+                            elif state.task is None:
+                                raise RuntimeError(f"{unit} is not running")
+                            else:
+                                self._stop_unit(unit)
+                item = self._command_queue.get_nowait()
 
     async def _supervise_until(
             self,
@@ -410,6 +320,37 @@ class Supervisor(BaseAsyncContextManager):
                 set[AsyncContextManager]
             ]
         ]:
+            """Supervise units until some condition is met. A set of events can be
+            passed in as part of the condition to return.
+
+            The allowed return conditions are:
+                FIRST_EVENT: first event set.
+                FIRST_UNIT: first unit finished.
+                FIRST_EVENT_OR_UNIT: first event set or unit finished.
+                ALL_EVENTS: all events set.
+                ALL_UNITS: all units finished.
+                ALL_EVENTS_AND_UNITS: all events set and all units finished.
+
+            Args:
+                events (Iterable[asyncio.Event], optional): Events that the
+                    supervisor can return at when set. Defaults to [].
+                return_when (str, optional): Condition to return at. Defaults to
+                    FIRST_EVENT_OR_UNIT.
+
+            Returns:
+                tuple[
+                    tuple[
+                        set[asyncio.Event],
+                        dict[AsyncContextManager, None | Exception]
+                    ],
+                    tuple[
+                        set[asyncio.Event],
+                        set[AsyncContextManager]
+                    ]
+                ]: (done_events, done_units), (pending_events, pending_units).
+                    done_units is a dictionary from units to their results or
+                    exceptions caught.
+            """
             # Set up return values
             done_events = set()
             done_units = {}  # Unit -> exception?
@@ -443,10 +384,10 @@ class Supervisor(BaseAsyncContextManager):
                             pending_units.discard(unit)
                             if unit in self._units:
                                 state = self._units[unit]
-                                self.log.info('%s is done with status %s', unit, state.status.name)
+                                self.log.info("%s is done with status %s", unit, state.status.name)
                                 if state.restart and state.status == Status.READY:
-                                    self.log.info('Restarting %s', unit)
-                                    self._command_queue.put_nowait((self.Command.START, unit))
+                                    self.log.info("Restarting %s", unit)
+                                    self.start_unit_nowait(unit)
                                 state.task = None
                             del self._running_unit_tasks[t]
 
@@ -473,15 +414,354 @@ class Supervisor(BaseAsyncContextManager):
                     elif return_when == Supervisor.ALL_EVENTS_AND_UNITS:
                         ret = len(pending_events) == 0 and len(pending_units) == 0
             finally:
-                monitor_command_queue_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    self._handle_command_queue(await monitor_command_queue_task, empty=False)
+                if not monitor_command_queue_task.done():
+                    monitor_command_queue_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await monitor_command_queue_task
                 for t in pending_event_tasks:
                     t.cancel()
                 await asyncio.gather(*pending_event_tasks, return_exceptions=True)
 
-            self.log.debug('Supervise until return condition met: %s', return_when)
+            self.log.debug("supervise_until return condition met: %s", return_when)
             return (done_events, done_units), (pending_events, pending_units)
+
+    def add_unit(
+            self,
+            unit: AsyncContextManager,
+            runfunc: Callable[[], Coroutine[Any, Any, None]],
+            restart: bool = True,
+            stopped: bool = False
+        ) -> bool:
+        """Add a unit. Can be called before the supervisor is started either
+        by entering it using async with or by directly calling start.
+
+        Args:
+            unit (AsyncContextManager): Unit to add.
+            runfunc (Callable[[], Coroutine[Any, Any, None]]): Unit's main
+                coroutine that runs within the unit's context and executes
+                whatever functionality the unit is meant to perform.
+            restart (bool, optional): Whether to restart the unit when it
+                exits. Defaults to True.
+            stopped (bool, optional): Whether to add the unit as stopped,
+                in which case it must be explicitly started before it first
+                runs. Defaults to False.
+
+        Returns:
+            bool: True if the unit was successfully added. False if the unit
+                was already added.
+        """
+        if unit in self._units:
+            return False
+
+        # Add unit
+        self.log.debug("Adding %s", unit)
+        if not stopped:
+            self._units[unit] = self.State(runfunc, restart, Status.READY)
+            self.start_unit_nowait(unit)
+        else:
+            self._units[unit] = self.State(runfunc, restart, Status.STOPPED)
+        return True
+
+    def remove_unit_nowait(
+            self,
+            unit: AsyncContextManager
+        ) -> bool:
+        """Remove a unit. Can be called before the supervisor is started
+        either by entering it using async with or by directly calling start.
+
+        Args:
+            unit (AsyncContextManager): Unit to remove.
+
+        Returns:
+            bool: True if the unit was successfully removed. False if the unit
+                has not been added or the unit is currently starting, running,
+                or stopping.
+        """
+        if unit not in self._units or self._units[unit].task is not None or self._units[unit].pending_start:
+            return False
+        self.log.debug("Removing %s", unit)
+        del self._units[unit]
+        return True
+
+    def start_unit_nowait(
+            self,
+            unit: AsyncContextManager,
+        ) -> bool:
+        """Schedule a unit to be started by the supervisor.
+
+        A unit currently scheduled to be stopped or currently stopping will
+        not be scheduled to be started.
+
+        Args:
+            unit (AsyncContextManager): Unit to start.
+
+        Returns:
+            bool: True if the unit was successfully scheduled to be started,
+                was already scheduled to be started, or is currently starting
+                or running. False if the unit has not been added, has a stop
+                scheduled, or is currently being stopped.
+        """
+        if unit not in self._units or self._units[unit].pending_stop:
+            return False
+
+        state = self._units[unit]
+        if state.status in {Status.READY, Status.STOPPED}:
+            if not state.pending_start:
+                self._command_queue.put_nowait((self.Command.START, unit))
+                state.pending_start = True
+            return True
+        elif state.status in {Status.ENTERING, Status.RUNNING}:
+            return True
+        elif state.status == Status.EXITING:
+            return False
+
+    async def done_starting(self, unit):
+        """Wait for a unit to finish starting while running all other units.
+
+        Args:
+            unit (AsyncContextManager): Unit to wait for.
+
+        Returns:
+            bool: True if the unit finished starting successfully or was
+                already started and is currently running. False if the unit
+                has not been added, does not have a start scheduled and is not
+                currently starting, or errored out while starting.
+        """
+        if unit not in self._units:
+            return False
+
+        state = self._units[unit]
+        if state.status == Status.RUNNING:
+            return True
+        elif state.pending_start or state.status == Status.ENTERING:
+            while True:
+                (done_events, done_units), (_, _) = await self.supervise_until([state.done_entering])
+                if state.done_entering in done_events:
+                    return True
+                if unit in done_units:
+                    return False
+        else:
+            return False
+
+    async def start_unit(self, unit):
+        """Schedule a unit to start if it does not already have a start
+        scheduled and wait for it to finish starting while running all other
+        units.
+
+        Args:
+            unit (AsyncContextManager): Unit to start and wait for.
+
+        Returns:
+            bool: True if the unit started or was already started and is
+                currently running. False if the unit has not been added, has a
+                stop scheduled, is currently being stopped, or errored out
+                while starting.
+        """
+        if not self.start_unit_nowait(unit):
+            return False
+        return await self.done_starting(unit)
+
+    def stop_unit_nowait(
+            self,
+            unit: AsyncContextManager,
+            force: bool=False
+        ) -> bool:
+        """Schedule a unit to be stopped by the supervisor.
+
+        A unit not currently stopped will always be scheduled to be stopped,
+        no matter its current state. If a unit is currently starting, or is
+        not yet starting but has a start scheduled, the stop will be scheduled
+        after the unit finishes starting, unless the unit is force stopped, in
+        which case the unit starting will be interrupted. If the unit is
+        currently running, the stop is scheduled immediately.
+
+        Args:
+            unit (AsyncContextManager): Unit to stop.
+            force (bool, optional): Whether or not to force stop the unit.
+
+        Returns:
+            bool: True if the unit was successfully scheduled to be stopped.
+                False if the unit has not been added.
+        """
+        if unit not in self._units:
+            return False
+
+        state = self._units[unit]
+        if state.status in {Status.READY, Status.STOPPED}:  # Unit is not currently running
+            if state.pending_start:  # But it has a start pending, so we schedule a stop for after it has started
+                if not state.pending_stop:
+                    self._command_queue.put_nowait((self.Command.STOP, unit))
+                    state.pending_stop = True
+                    state.force_pending_stop |= force
+            else:
+                if state.status == Status.READY:
+                    state.status = Status.STOPPED
+                    state.done_exiting.set()
+            return True
+        elif state.status in {Status.ENTERING, Status.RUNNING}:
+            if not state.pending_stop:
+                self._command_queue.put_nowait((self.Command.STOP, unit))
+                state.pending_stop = True
+                state.force_pending_stop |= force
+            return True
+        elif state.status == Status.EXITING:
+            return True
+
+    async def done_stopping(self, unit):
+        """Wait for a unit to finish stopping while running all other units.
+
+        Args:
+            unit (AsyncContextManager): Unit to wait for.
+
+        Returns:
+            bool: True if the unit finished stopping successfully or was
+                already stopped. False if the unit has not been added, does
+                not have a stop scheduled and is not currently stopped, or
+                errored out while stopping.
+        """
+        if unit not in self._units:
+            return False
+
+        state = self._units[unit]
+        if state.status == Status.STOPPED:
+            return True
+        elif state.pending_stop or state.status == Status.EXITING:
+            while True:
+                (done_events, done_units), (_, _) = await self.supervise_until([state.done_exiting])
+                if state.done_exiting in done_events:
+                    return True
+                if unit in done_units:
+                    return False
+        else:
+            return False
+
+    async def stop_unit(self, unit):
+        """Schedule a unit to stop if it does not already have a stop
+        scheduled and wait for it to finish stopping while running all other
+        units.
+
+        Args:
+            unit (AsyncContextManager): Unit to stop and wait for.
+
+        Returns:
+            bool: True if the unit stopped or was already stopped. False if
+                the unit has not been added.
+        """
+        if not self.stop_unit_nowait(unit):
+            return False
+        return await self.done_stopping(unit)
+
+    def status(
+            self,
+            unit: AsyncContextManager
+        ) -> Status | None:
+        """Get the status of a unit.
+
+        The possible statuses are:
+        - READY: Unit is waiting to be started.
+        - ENTERING: Unit's `aenter` coroutine is running, i.e. the unit is
+            starting.
+        - RUNNING: Unit's main coroutine is running.
+        - EXITING: Unit's `aexit` coroutine is running, i.e. the unit is
+            stopping.
+        - STOPPED: Unit is stopped and will not be restarted automatically
+            (e.g. if restart=False, or the unit was stopped explicitly).
+
+        Args:
+            unit (AsyncContextManager): Unit to return the status for.
+
+        Returns:
+            Status | None: Unit's status, or None if the unit has not
+                been added.
+        """
+        if unit not in self._units:
+            return None
+        return self._units[unit].status
+
+    def is_ready(
+            self,
+            unit: AsyncContextManager
+        ) -> bool | None:
+        """Check wether a unit is currently ready.
+
+        Args:
+            unit (AsyncContextManager): Unit to check.
+
+        Returns:
+            bool | None: Whether the unit is currently ready, or None if the
+                unit has not been added.
+        """
+        if unit not in self._units:
+            return None
+        return self._units[unit].status == Status.STOPPED
+
+    def is_starting(
+            self,
+            unit: AsyncContextManager
+        ) -> bool | None:
+        """Check wether a unit is currently starting.
+
+        Args:
+            unit (AsyncContextManager): Unit to check.
+
+        Returns:
+            bool | None: Whether the unit is currently starting, or None if
+                the unit has not been added.
+        """
+        if unit not in self._units:
+            return None
+        return self._units[unit].status == Status.ENTERING
+
+    def is_running(
+            self,
+            unit: AsyncContextManager
+        ) -> bool | None:
+        """Check wether a unit is currently running.
+
+        Args:
+            unit (AsyncContextManager): Unit to check.
+
+        Returns:
+            bool | None: Whether the unit is currently running, or None if the
+                unit has not been added.
+        """
+        if unit not in self._units:
+            return None
+        return self._units[unit].status == Status.RUNNING
+
+    def is_stopping(
+            self,
+            unit: AsyncContextManager
+        ) -> bool | None:
+        """Check wether a unit is currently stopping.
+
+        Args:
+            unit (AsyncContextManager): Unit to check.
+
+        Returns:
+            bool | None: Whether the unit is currently stopping, or None if
+                the unit has not been added.
+        """
+        if unit not in self._units:
+            return None
+        return self._units[unit].status == Status.EXITING
+
+    def is_stopped(
+            self,
+            unit: AsyncContextManager
+        ) -> bool | None:
+        """Check wether a unit is currently stopped.
+
+        Args:
+            unit (AsyncContextManager): Unit to check.
+
+        Returns:
+            bool | None: Whether the unit is currently stopped, or None if the
+                unit has not been added.
+        """
+        if unit not in self._units:
+            return None
+        return self._units[unit].status == Status.STOPPED
 
     async def supervise_until(
         self,
@@ -566,6 +846,7 @@ class Timer(BaseAsyncContextManager):
         return f"Timer({self.timeout})"
 
 if __name__ == "__main__":
+    import time
     import random
 
     class Unit(BaseAsyncContextManager):
@@ -576,6 +857,7 @@ if __name__ == "__main__":
 
         async def _start(self):
             self.log.info("Entering")
+            self._started = True
             await asyncio.sleep(1)
 
         async def _stop(self, *args):
@@ -588,8 +870,8 @@ if __name__ == "__main__":
                 self.log.info("Working... [%s]", i)
                 wait = random.uniform(0, 1)
                 await asyncio.sleep(wait)
-                if wait > 0.5:
-                    raise Exception("Uh oh, something went wrong")
+                # if wait > 0.5:
+                #     raise Exception("Uh oh, something went wrong")
                 i += 1
 
         async def runfunc1(self):
@@ -603,17 +885,22 @@ if __name__ == "__main__":
                 await asyncio.sleep(1)
 
         def __repr__(self):
-            return f'Unit(\'{self.name}\')'
+            return f"Unit(\'{self.name}\')"
 
     async def main():
+        start_time = time.perf_counter()
         supervisor = Supervisor()
         async with supervisor:
-            units = [Unit(f'unit {i}') for i in range(3)]
+            units = [Unit(f"unit {i}") for i in range(1)]
             for unit in units:
-                supervisor.add_unit(unit, unit.run_forever, restart=False)
+                supervisor.add_unit(unit, unit.run_forever, restart=False, stopped=False)
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(supervisor.supervise_forever(), 0.5)
+            supervisor.stop_unit_nowait(unit, force=True)
             await supervisor.supervise_until(return_when=Supervisor.ALL_UNITS)
+        logger.info("Duration: %ss", time.perf_counter() - start_time)
         return supervisor
 
     logging.getLogger("asyncio").setLevel(logging.WARNING)
-    logging.basicConfig(level=logging.DEBUG, format="%(message)s")
+    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(message)s")
     supervisor = asyncio.run(main())
