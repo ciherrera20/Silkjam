@@ -161,10 +161,8 @@ class Supervisor(BaseAsyncContextManager):
         state = self._units[unit]
         state.result = None
         state.done_exiting.clear()
-        canceled = False  # Whether or not the unit was canceled at any point
 
         try:  # Enter unit
-            state.pending_start = False
             state.status = Status.ENTERING
 
             # Handle forced pending stops before entering
@@ -178,7 +176,6 @@ class Supervisor(BaseAsyncContextManager):
         except BaseException as err:  # Enter failed
             if isinstance(err, asyncio.CancelledError):
                 self.log.error("%s canceled while entering", unit)
-                canceled = True
             else:
                 self.log.exception("Exception caught while entering %s: %s", unit, err)
             if isinstance(KeyboardInterrupt, SystemExit):
@@ -188,6 +185,7 @@ class Supervisor(BaseAsyncContextManager):
             self.log.debug("Finished entering %s", unit)
             state.done_entering.set()
             try:  # Run unit
+                state.pending_start = False
                 state.status = Status.RUNNING
 
                 # Handle pending stops after entering
@@ -201,7 +199,6 @@ class Supervisor(BaseAsyncContextManager):
             except BaseException as err:  # Run failed
                 if isinstance(err, asyncio.CancelledError):
                     self.log.error("%s canceled", unit)
-                    canceled = True
                 else:
                     self.log.exception("Exception caught while running %s: %s", unit, err)
                 if isinstance(KeyboardInterrupt, SystemExit):
@@ -211,7 +208,7 @@ class Supervisor(BaseAsyncContextManager):
                 self.log.debug("Finished running %s", unit)
         finally:  # Unit finished running or failed
             try:  # Exit unit
-                state.pending_stop = state.force_pending_stop = False
+                state.pending_start = False
                 state.status = Status.EXITING
                 self.log.debug("Exiting %s", unit)
                 if isinstance(state.result, BaseException):  # Propagate exception to unit's aexit
@@ -221,7 +218,6 @@ class Supervisor(BaseAsyncContextManager):
             except BaseException as err:  # Exit failed
                 if isinstance(err, asyncio.CancelledError):
                     self.log.error("%s canceled while exiting", unit)
-                    canceled = True
                 else:
                     self.log.exception("Exception caught while exiting %s: %s", unit, err)
                 if isinstance(KeyboardInterrupt, SystemExit):
@@ -230,7 +226,10 @@ class Supervisor(BaseAsyncContextManager):
             else:  # Unit exited successfully
                 self.log.debug("Finished exiting %s", unit)
                 state.done_exiting.set()
-            state.status = Status.STOPPED if canceled else Status.READY
+
+            # Cleanup state
+            state.status = Status.STOPPED if state.pending_stop else Status.READY
+            state.pending_stop = state.force_pending_stop = False
             if not self._lock.locked():
                 del self._running_unit_tasks[state.task]
             state.task = None
@@ -611,6 +610,7 @@ class Supervisor(BaseAsyncContextManager):
                 state.force_pending_stop |= force
             return True
         elif state.status == Status.EXITING:
+            state.pending_stop = True
             return True
 
     async def done_stopping(
