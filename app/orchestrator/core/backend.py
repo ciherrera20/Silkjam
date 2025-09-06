@@ -331,6 +331,7 @@ class MCServerProc(BaseAsyncContextManager):
             self.log.debug("Server process (pid %s) stopped communication", self.server_proc.pid)
         except asyncio.CancelledError:
             self.log.debug("Backend monitor task canceled")
+            raise
 
     def __repr__(self):
         return f"MCServerProc(\'{self.name}\')"
