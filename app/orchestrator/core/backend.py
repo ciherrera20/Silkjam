@@ -77,8 +77,7 @@ class MCBackend(Supervisor):
             self.stop_unit_nowait(self.sleep_timer)
 
     async def serve_forever(self):
-        if await self.done_starting(self.mcproc):  # Await initial start
-            self.log.debug("Initial server start")
+        await self.done_starting(self.mcproc)  # Await initial start
         while True:
             # Wait until the config changes or a proxy or server task is canceled or errors out
             (done_events, done_units), (_, _) = await self.supervise_until([self._start_mcproc, self._stop_mcproc, self._online_player_change])

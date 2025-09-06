@@ -9,11 +9,11 @@ from contextlib import suppress
 #
 from .baseacm import BaseAsyncContextManager
 from .client import MCClient
-from utils.logger_adapters import PrefixLoggerAdapter
+from utils.logger_adapters import PrefixLoggerAdapter, BytesLoggerAdapter
 
 class MCProc(BaseAsyncContextManager):
-    STARTING_SERVER_REGEX = re.compile(r"^.*:(\d{5}).*$")
-    DONE_REGEX = re.compile(r"^.*Done \(.*$")
+    STARTING_SERVER_REGEX = re.compile(rb"^.*:(\d{5}).*$")
+    DONE_REGEX = re.compile(rb"^.*Done \(.*$")
 
     STDOUT_LOG_LEVEL = logging.DEBUG
     STDERR_LOG_LEVEL = logging.ERROR
@@ -60,6 +60,9 @@ class MCProc(BaseAsyncContextManager):
                 await task
 
     async def _stop(self, *args):
+        log_stdout_task = asyncio.create_task(self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL))
+        log_stderr_task = asyncio.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))
+
         try:
             self.log.info("Closing minecraft server process")
             shutdown = self.server_proc.returncode is not None
@@ -101,33 +104,20 @@ class MCProc(BaseAsyncContextManager):
                     self.log.debug("Sending SIGKILL to minecraft server process %s", self.server_proc.pid)
                     self.server_proc.send_signal(signal.SIGKILL)
                     self.log.debug("Minecraft server process exited after SIGKILL")
-            await super()._stop(*args)
 
-    async def read_pipe(self, pipe):
-        msg = b""
-        while True:
-            try:
-                msg += await pipe.readuntil()
-            except asyncio.LimitOverrunError as err:
-                msg += await pipe.read(err.consumed)
-            except asyncio.IncompleteReadError as err:
-                msg += err.partial
-            else:
-                if len(msg) == 0:
-                    break
-                yield msg.decode("utf-8")
-                msg = b""
+        await asyncio.gather(log_stdout_task, log_stderr_task)
+        await super()._stop(*args)
 
     async def read_stdout_until_done_initializing(self):
-        pipe_logger = PrefixLoggerAdapter(f"stdout") | self.log
-        async for msg in self.read_pipe(self.server_proc.stdout):
+        pipe_logger = BytesLoggerAdapter() | PrefixLoggerAdapter(f"stdout") | self.log
+        async for msg in self.server_proc.stdout:
             pipe_logger.log(self.STDOUT_LOG_LEVEL, msg)
             if m := self.STARTING_SERVER_REGEX.match(msg):
-                if m.group(1) == str(self.backend.port):
+                if m.group(1) == str(self.backend.port).encode("utf-8"):
                     self.log.debug("Read server starting msg")
                     break
 
-        async for msg in self.read_pipe(self.server_proc.stdout):
+        async for msg in self.server_proc.stdout:
             pipe_logger.log(self.STDOUT_LOG_LEVEL, msg)
             if self.DONE_REGEX.match(msg):
                 self.log.debug("Read done msg")
@@ -157,8 +147,8 @@ class MCProc(BaseAsyncContextManager):
         self.log.debug("Server finished initializing")
 
     async def log_pipe(self, pipe, pipe_name="pipe", level=logging.DEBUG):
-        pipe_logger = PrefixLoggerAdapter(f"{pipe_name}") | self.log
-        async for msg in self.read_pipe(pipe):
+        pipe_logger = BytesLoggerAdapter() | PrefixLoggerAdapter(f"{pipe_name}") | self.log
+        async for msg in pipe:
             pipe_logger.log(level, msg)
 
     async def monitor(self):
