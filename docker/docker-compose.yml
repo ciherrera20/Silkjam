@@ -17,5 +17,6 @@ services:
       - DEBUG=${DEBUG:-false}
       - HOSTNAME=${HOSTNAME:-localhost}  # Domain name
     restart: unless-stopped
+    stop_grace_period: 90s  # allow time for minecraft servers to stop before killing them
 volumes:
   data:
