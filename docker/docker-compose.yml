@@ -18,5 +18,10 @@ services:
       - HOSTNAME=${HOSTNAME:-localhost}  # Domain name
     restart: unless-stopped
     stop_grace_period: 90s  # allow time for minecraft servers to stop before killing them
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"   # each log file capped at 10 MB
+        max-file: "3"     # keep 3 rotated files
 volumes:
   data:
