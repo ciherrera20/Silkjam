@@ -43,8 +43,7 @@ class MCOrchestrator(Supervisor):
             self.log.info("Reading config file")
             self.config = json.load(self.config_file)
             self.log.info("%s", self.config)
-        except json.JSONDecodeError as err:
-            self.log.error(err)
+        except json.JSONDecodeError:
             self.log.info("Error reading config. Creating default config")
             self.config = {
                 "proxy_listing": [
