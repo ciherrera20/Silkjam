@@ -32,7 +32,7 @@ class MCBackend(Supervisor):
         # Create units to supervise
         self.mcproc: MCProc = MCProc(self)
         self.sleep_timer: Timer = Timer(self.sleep_timeout)
-        self.add_unit(self.mcproc, self.mcproc.monitor, restart=True, stopped=False)
+        self.add_unit(self.mcproc, self.mcproc.monitor, restart=True, stopped=True)
         self.add_unit(self.sleep_timer, self.sleep_timer.wait, restart=False, stopped=True)
 
         self._online_players = 0  # Keep track of number of players connected to server
