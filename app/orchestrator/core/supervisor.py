@@ -358,6 +358,12 @@ class Supervisor(BaseAsyncContextManager):
             try:
                 ret = False
                 while not ret:
+                    # Start/restart any READY units
+                    for unit, state in self._units.items():
+                        if state.restart and state.status == Status.READY and not state.pending_start:
+                            self.log.info("Restarting %s", unit)
+                            self.start_unit_nowait(unit)
+
                     # Protect critical part of supervise loop
                     async with self._lock:
                         done, pending = await asyncio.wait([monitor_command_queue_task, *pending_event_tasks, *self._running_unit_tasks], return_when=asyncio.FIRST_COMPLETED)
@@ -379,9 +385,6 @@ class Supervisor(BaseAsyncContextManager):
                             if unit in self._units:
                                 state = self._units[unit]
                                 self.log.info("%s is done with status %s", unit, state.status.name)
-                                if state.restart and state.status == Status.READY:
-                                    self.log.info("Restarting %s", unit)
-                                    self.start_unit_nowait(unit)
                                 state.task = None
                             del self._running_unit_tasks[t]
 

@@ -13,8 +13,8 @@ class BaseAsyncContextManager(AbstractAsyncContextManager, ABC):
     # Intended to be called directly by users of this class
     async def start(self):
         if not self._started:
-            await self._start()
             self._started = True
+            await self._start()
 
     async def stop(self):
         if self._started:
@@ -33,8 +33,8 @@ class BaseAsyncContextManager(AbstractAsyncContextManager, ABC):
     # Async context manager methods, designed to be reusable
     async def __aenter__(self) -> Self:
         if not self._started:
-            await self._start()
             self._started = True
+            await self._start()
         return self
 
     async def __aexit__(self, *args):

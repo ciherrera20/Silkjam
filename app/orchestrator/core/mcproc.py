@@ -39,7 +39,6 @@ class MCProc(BaseAsyncContextManager):
             stderr=asyncio.subprocess.PIPE,
             cwd=self.root
         )
-        self._started = True  # Mark unit as started so that cleanup will still run if start gets interrupted after this point
         self.log.info("Starting minecraft server process with pid %s", self.server_proc.pid)
 
         log_stderr_task = asyncio.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))

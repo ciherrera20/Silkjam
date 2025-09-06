@@ -3,6 +3,7 @@ import asyncio
 import logging
 import jproperties
 from pathlib import Path
+from contextlib import AbstractContextManager
 
 #
 # Project imports
@@ -14,11 +15,19 @@ from utils.logger_adapters import PrefixLoggerAdapter
 
 logger = logging.getLogger(__name__)
 
+type PortCMFactory = callable[[], AbstractContextManager[int]]
+
 class MCBackend(Supervisor):
-    def __init__(self, root: Path, listing: dict):
+    def __init__(
+            self,
+            root: Path,
+            port_factory: PortCMFactory,
+            listing: dict
+        ):
         super().__init__()
         self.root = root
         self.name = listing["name"]
+        self.port_factory = port_factory
         self.log = PrefixLoggerAdapter(logger, self.name)
 
         self.version = MCVersion(**listing["version"])
@@ -51,6 +60,17 @@ class MCBackend(Supervisor):
             self.log.info("Reading server properties")
             with properties_path.open("r") as f:
                 self.properties.load(f.read())
+
+            # Write server port, rcon port, and rcon password
+            server_port = self.stack.enter_context(self.port_factory())
+            rcon_port = self.stack.enter_context(self.port_factory())
+            self.properties["server-port"] = str(server_port)
+            self.properties["rcon-port"] = str(rcon_port)
+            self.properties["rcon-password"] = ""
+            self.properties["enable-rcon"] = "true"
+
+            with properties_path.open("wb") as f:
+                self.properties.store(f)
         else:
             self.log.info("Server properties does not exist!")
 

@@ -36,20 +36,24 @@ minecraft-orchestrator/
 ```
 
 # TODOs
+- Use Pydantic for reading and writing config and server properties
 - Create server.properties if it doesn't exist
-- Use dynamic port allocation for the backend
 - Figure out how to create a less privileged user per backend server and start the server processes as that user
 - Add unit to constantly ping server process and read the number of players connected, as well as the protocol version
 - Add capability to backup to remote drive
 - Add ability to disable sleep timeout
-- When backend server is running, forward pings to it
-    - [DONE] Figure out when backend server is ready to accept players
 - Figure out why when spamming connect as the server starts, all future connects just show Server disconnected message
+- Still not happy with overall organization. Move docker stuff and env stuff back out into project root. Also, think about portability of project_environment
+
+# IN PROGRESS
 
 # DONE
+- [DONE] Use dynamic port allocation for the backend
 - [DONE] Track PR to mctools: https://github.com/OwenCochell/mctools/pull/18
 - [DONE] Figure out how to use RCON
 - [DONE] Add core API to start/stop servers
 - [DONE] Add server sleeping after a certain amount of time with no players
 - [DONE] Consider re-writing backend as a single class that is started and stopped dynamically by orchestrator when the proxy received a signal
     - Decided against. Its easier to have a backend class that is always running and supervises its own set of units.
+- [DONE] When backend server is running, forward pings to it
+    - [DONE] Figure out when backend server is ready to accept players
