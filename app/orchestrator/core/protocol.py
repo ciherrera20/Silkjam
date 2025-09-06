@@ -49,12 +49,12 @@ class PacketReader:
             i += 3
 
             # Read string
-            str_length = struct.unpack(">H", data[i:i+2])[0]
+            string_length = struct.unpack(">H", data[i:i+2])[0]
             i += 2
-            string = str(data[i:i+str_length*2], "utf-16-be")
+            string = str(data[i:i+string_length*2], "utf-16-be")
             if string != "MC|PingHost":
                 raise MCProtocolError(data, f"Expected string \"MC|PingHost\", received \"{string}\"")
-            i += str_length*2
+            i += string_length*2
 
             # Read remaining length
             remaining_length = struct.unpack(">H", data[i:i+2])[0]
@@ -109,10 +109,10 @@ class PacketReader:
     @classmethod
     def decode_string(cls, data: Buffer) -> tuple[int, str]:
         try:
-            varint_length, str_length = cls.decode_varint(data)
-            if len(data) < varint_length + str_length:
-                raise asyncio.IncompleteReadError(data, str_length + varint_length)
-            return varint_length + str_length, str(data[varint_length:varint_length + str_length], "utf-8")
+            varint_length, string_length = cls.decode_varint(data)
+            if len(data) < varint_length + string_length:
+                raise asyncio.IncompleteReadError(data, string_length + varint_length)
+            return varint_length + string_length, str(data[varint_length:varint_length + string_length], "utf-8")
         except (MCProtocolError, UnicodeDecodeError) as err:
             raise MCProtocolError(data, f"Malformed string: {err}") from err
 
@@ -359,11 +359,24 @@ class PacketWriter:
     ############################################# Encode functions #############################################
 
     @staticmethod
+    def encode_legacy_ping(protocol_version, hostname, port) -> bytes:
+        header = b"\xfe\x01\xfa"
+        string = "MC|PingHost"
+        string_length = struct.pack(">H", len(string))
+        string = string.encode("utf-16-be")
+        protocol_version = struct.pack(">B", protocol_version)
+        hostname_length = struct.pack(">H", len(hostname))
+        hostname = hostname.encode("utf-16-be")
+        port = struct.pack(">I", port)
+        remaining_length = struct.pack(">H", len(protocol_version + hostname_length + hostname + port))
+        return header + string_length + string + remaining_length + protocol_version + hostname_length + hostname + port
+
+    @staticmethod
     def encode_legacy_ping_response(protocol_version: int, mc_version: str, motd: str, max_players: int) -> bytes:
         current_player_count = 0
         string = f"§1\x00{protocol_version}\x00{mc_version}\x00{motd}\x00{current_player_count}\x00{max_players}"
-        str_length = len(string)
-        return b"\xff" + struct.pack(">H", min(str_length, 65535)) + string.encode("utf-16-be")
+        string_length = len(string)
+        return b"\xff" + struct.pack(">H", min(string_length, 65535)) + string.encode("utf-16-be")
 
     @staticmethod
     def encode_varint(value: int) -> bytes:
