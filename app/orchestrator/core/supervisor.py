@@ -7,7 +7,7 @@ import asyncio
 from enum import IntEnum
 from typing import AsyncContextManager, Iterable, Callable, Coroutine, Any
 from contextlib import AsyncExitStack, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 logger = logging.getLogger(__name__)
 
@@ -81,10 +81,10 @@ class Supervisor(BaseAsyncContextManager):
 
         # Set when the unit's enter is finished. Cleared when the unit starts
         # and when it finishes.
-        done_entering: asyncio.Event = asyncio.Event()
+        done_entering: asyncio.Event = field(default_factory=asyncio.Event)
 
         # Set when the unit's exit is finished. Cleared when the unit starts.
-        done_exiting: asyncio.Event = asyncio.Event()
+        done_exiting: asyncio.Event = field(default_factory=asyncio.Event)
 
     class Command(IntEnum):
         """Internal commands used by the Supervisor"""
@@ -599,9 +599,8 @@ class Supervisor(BaseAsyncContextManager):
                     state.pending_stop = True
                     state.force_pending_stop |= force
             else:
-                if state.status == Status.READY:
-                    state.status = Status.STOPPED
-                    state.done_exiting.set()
+                # Update state to STOPPED
+                state.status = Status.STOPPED
             return True
         elif state.status in {Status.ENTERING, Status.RUNNING}:
             if not state.pending_stop:
