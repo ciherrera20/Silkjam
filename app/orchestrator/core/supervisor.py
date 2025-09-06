@@ -515,7 +515,10 @@ class Supervisor(BaseAsyncContextManager):
         elif state.status == Status.EXITING:
             return False
 
-    async def done_starting(self, unit):
+    async def done_starting(
+            self,
+            unit: AsyncContextManager
+        ) -> bool:
         """Wait for a unit to finish starting while running all other units.
 
         Args:
@@ -543,7 +546,10 @@ class Supervisor(BaseAsyncContextManager):
         else:
             return False
 
-    async def start_unit(self, unit):
+    async def start_unit(
+            self,
+            unit: AsyncContextManager
+        ) -> bool:
         """Schedule a unit to start if it does not already have a start
         scheduled and wait for it to finish starting while running all other
         units.
@@ -607,7 +613,10 @@ class Supervisor(BaseAsyncContextManager):
         elif state.status == Status.EXITING:
             return True
 
-    async def done_stopping(self, unit):
+    async def done_stopping(
+            self,
+            unit: AsyncContextManager
+        ) -> bool:
         """Wait for a unit to finish stopping while running all other units.
 
         Args:
@@ -635,19 +644,30 @@ class Supervisor(BaseAsyncContextManager):
         else:
             return False
 
-    async def stop_unit(self, unit):
+    async def stop_unit(
+            self,
+            unit: AsyncContextManager,
+            force: bool=False
+        ) -> bool:
         """Schedule a unit to stop if it does not already have a stop
         scheduled and wait for it to finish stopping while running all other
         units.
 
+        If a unit is currently starting, or is not yet starting but has a
+        start scheduled, the stop will be scheduled after the unit finishes
+        starting, unless the unit is force stopped, in which case the unit
+        starting will be interrupted. If the unit is currently running, the
+        stop is scheduled immediately.
+
         Args:
             unit (AsyncContextManager): Unit to stop and wait for.
+            force (bool, optional): Whether or not to force stop the unit.
 
         Returns:
             bool: True if the unit stopped or was already stopped. False if
                 the unit has not been added.
         """
-        if not self.stop_unit_nowait(unit):
+        if not self.stop_unit_nowait(unit, force=force):
             return False
         return await self.done_stopping(unit)
 
