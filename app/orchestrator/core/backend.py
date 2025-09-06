@@ -20,10 +20,6 @@ from utils.logger_adapters import PrefixLoggerAdapter, BytesLoggerAdapter
 logger = logging.getLogger(__name__)
 
 class MCBackend(Supervisor):
-    class Status(IntEnum):
-        SLEEPING = 0
-        RUNNING = 1
-
     def __init__(self, root: Path, listing: dict):
         super().__init__()
         self.root = root
@@ -34,7 +30,6 @@ class MCBackend(Supervisor):
         self.subdomain = listing["subdomain"]
         self.sleep_properties = listing["sleep_properties"]
         self.sleep_timeout = self.sleep_properties["timeout"]
-        self.status = MCBackend.Status.SLEEPING
 
         self.properties = None
         self.icon = None
@@ -46,7 +41,9 @@ class MCBackend(Supervisor):
         self.add_unit(self.sleep_timer, self.sleep_timer.wait, restart=False, stopped=True)
 
         self._online_players = 0  # Keep track of number of players connected to server
-        self._status_change = asyncio.Event()
+        # self._status_change = asyncio.Event()
+        self._start_server_proc = asyncio.Event()
+        self._stop_server_proc = asyncio.Event()
         self._online_player_change: asyncio.Event = asyncio.Event()
 
     async def _start(self):
@@ -72,45 +69,40 @@ class MCBackend(Supervisor):
         else:
             self.icon = None
 
-    async def reload_server_proc(self):
-        # Start up or shut down server proc
-        if self.status == MCBackend.Status.RUNNING and not self.server_proc.is_running():
-            self.online_players = 0
-            self.log.debug("Starting server proc")
-            await self.start_unit(self.server_proc)
-        elif self.status == MCBackend.Status.SLEEPING and not self.server_proc.is_sleeping():
-            self.log.debug("Stopping server proc")
-            await self.stop_unit(self.server_proc)
-            self.online_players = 0
+    async def _stop(self, *args):
+        await super()._stop(*args)
 
     def reload_sleep_timer(self):
         # Start or stop sleep timer
-        self.log.debug("server_proc is running: %s, online_players: %s", self.server_proc.is_running(), self.online_players)
-        if self.server_proc.is_running() and self.online_players == 0:
+        if self.server_proc_running() and self.online_players == 0:
             self.log.debug("Starting sleep timer")
             self.start_unit_nowait(self.sleep_timer)
-        elif self.server_proc.is_sleeping() or self.online_players > 0:
+        else:
             self.log.debug("Stopping sleep timer")
             self.stop_unit_nowait(self.sleep_timer)
 
     async def serve_forever(self):
         while True:
             # Wait until the config changes or a proxy or server task is canceled or errors out
-            (done_events, done_units), (_, _) = await self.supervise_until([self._status_change, self._online_player_change])
-            if self._status_change in done_events:
-                self.log.debug("Status change requested")
-                await self.reload_server_proc()
-                self._status_change.clear()
+            (done_events, done_units), (_, _) = await self.supervise_until([self._start_server_proc, self._stop_server_proc, self._online_player_change])
+            if self._start_server_proc in done_events:
+                self.log.debug("Start server requested")
+                await self.done_stopping(self.server_proc)
+                await self.start_unit(self.server_proc)
+                self.online_players = 0
+                self._start_server_proc.clear()
+            if self._stop_server_proc in done_events:
+                self.log.debug("Stop server requested")
+                await self.stop_unit(self.server_proc)
+                self.online_players = 0
+                self._stop_server_proc.clear()
             if self._online_player_change in done_events:
                 self.log.debug("Online players is %s", self.online_players)
                 self.reload_sleep_timer()
                 self._online_player_change.clear()
             if self.sleep_timer in done_units and done_units[self.sleep_timer] is None:
                 self.log.info("No players connected for %ss, stopping server", self.sleep_timeout)
-                self.set_sleeping()
-
-    async def _stop(self, *args):
-        await super()._stop(*args)
+                self.stop_server_proc()
 
     @property
     def port(self):
@@ -123,14 +115,14 @@ class MCBackend(Supervisor):
             motd_prop = self.properties["motd"].data
         else:
             motd_prop = None
-        if self.server_proc.is_running():
+        if self.server_proc_running():
             return motd_prop
         else:
             return self.sleep_properties.get("motd") or motd_prop
 
     @property
     def online_players(self):
-        if self.server_proc.is_running():
+        if self.server_proc_running():
             return self._online_players
         else:
             return self.sleep_properties.get("online-players") or self._online_players
@@ -146,7 +138,7 @@ class MCBackend(Supervisor):
             max_players_prop = int(self.properties["max-players"].data)
         else:
             max_players_prop = None
-        if self.server_proc.is_running():
+        if self.server_proc_running():
             return max_players_prop
         else:
             return self.sleep_properties.get("max-players") or max_players_prop
@@ -155,23 +147,20 @@ class MCBackend(Supervisor):
     def waking_kick_msg(self):
         return self.sleep_properties.get("waking-kick-msg")
 
-    def is_running(self):
-        return self.server_proc.is_running()
+    def server_proc_starting(self):
+        return self.is_starting(self.server_proc)
 
-    def is_sleeping(self):
-        return self.server_proc.is_sleeping()
+    def server_proc_running(self):
+        return self.is_running(self.server_proc)
 
-    def set_sleeping(self):
-        if not self.server_proc.is_sleeping():
-            self.log.debug("Set sleeping")
-            self.status = MCBackend.Status.SLEEPING
-            self._status_change.set()
+    def server_proc_stopping(self):
+        return self.is_stopping(self.server_proc)
 
-    def set_running(self):
-        if not self.server_proc.is_running():
-            self.log.debug("Set running")
-            self.status = MCBackend.Status.RUNNING
-            self._status_change.set()
+    def start_server_proc(self):
+        self._start_server_proc.set()
+
+    def stop_server_proc(self):
+        self._stop_server_proc.set()
 
     def incr_online_players(self):
         self.online_players += 1
@@ -200,12 +189,6 @@ class MCServerProc(BaseAsyncContextManager):
         self.sigterm_timeout = sigterm_timeout
         self.server_proc: asyncio.Process
 
-    def is_sleeping(self):
-        return not self._started or self.server_proc.returncode is not None
-
-    def is_running(self):
-        return self._started and self.server_proc.returncode is None
-
     async def _start(self):
         await super()._start()
         server_jar_file = self.root / "server.jar"
@@ -216,6 +199,7 @@ class MCServerProc(BaseAsyncContextManager):
             stderr=asyncio.subprocess.PIPE,
             cwd=self.root
         )
+        self._started = True  # Mark unit as started so that cleanup will still run if start gets interrupted after this point
         self.log.info("Starting minecraft server process with pid %s", self.server_proc.pid)
 
         log_stderr_task = asyncio.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))
@@ -236,45 +220,48 @@ class MCServerProc(BaseAsyncContextManager):
                 await task
 
     async def _stop(self, *args):
-        self.log.info("Closing minecraft server process")
-        shutdown = self.server_proc.returncode is not None
-        if shutdown:
-            self.log.debug("Minecraft server process has already exited")
+        try:
+            self.log.info("Closing minecraft server process")
+            shutdown = self.server_proc.returncode is not None
+            if shutdown:
+                self.log.debug("Minecraft server process has already exited")
 
-        if not shutdown:
-            with suppress(asyncio.TimeoutError):
-                # Send stop command and wait before progressing to SIGINT
-                self.log.debug("Sending stop command to minecraft server process %s", self.server_proc.pid)
-                self.server_proc.stdin.write(b"stop\n")
-                await self.server_proc.stdin.drain()
-                await asyncio.wait_for(self.server_proc.wait(), self.stop_timeout)
-                shutdown = True
-                self.log.debug("Minecraft server process exited after stop command")
+            if not shutdown:
+                with suppress(asyncio.TimeoutError):
+                    # Send stop command and wait before progressing to SIGINT
+                    self.log.debug("Sending stop command to minecraft server process %s", self.server_proc.pid)
+                    self.server_proc.stdin.write(b"stop\n")
+                    await self.server_proc.stdin.drain()
+                    await asyncio.wait_for(self.server_proc.wait(), self.stop_timeout)
+                    shutdown = True
+                    self.log.debug("Minecraft server process exited after stop command")
 
-        if not shutdown:
-            with suppress(asyncio.TimeoutError):
-                # Send SIGINT and wait before progressing to SIGTERM
-                self.log.debug("Sending SIGINT to minecraft server process %s", self.server_proc.pid)
-                self.server_proc.send_signal(signal.SIGINT)
-                await asyncio.wait_for(self.server_proc.wait(), self.sigint_timeout)
-                shutdown = True
-                self.log.debug("Minecraft server process exited after SIGINT")
+            if not shutdown:
+                with suppress(asyncio.TimeoutError):
+                    # Send SIGINT and wait before progressing to SIGTERM
+                    self.log.debug("Sending SIGINT to minecraft server process %s", self.server_proc.pid)
+                    self.server_proc.send_signal(signal.SIGINT)
+                    await asyncio.wait_for(self.server_proc.wait(), self.sigint_timeout)
+                    shutdown = True
+                    self.log.debug("Minecraft server process exited after SIGINT")
 
-        if not shutdown:
-            with suppress(asyncio.TimeoutError):
-                # Send SIGTERM and wait before progressing to SIGKILL
-                self.log.debug("Sending SIGTERM to minecraft server process %s", self.server_proc.pid)
-                self.server_proc.send_signal(signal.SIGTERM)
-                await asyncio.wait_for(self.server_proc.wait(), self.sigterm_timeout)
-                shutdown = True
-                self.log.debug("Minecraft server process exited after SIGTERM")
-
-        if not shutdown:
-            # Send SIGKILL
-            self.log.debug("Sending SIGKILL to minecraft server process %s", self.server_proc.pid)
-            self.server_proc.send_signal(signal.SIGKILL)
-            self.log.debug("Minecraft server process exited after SIGKILL")
-        await super()._stop(*args)
+            if not shutdown:
+                with suppress(asyncio.TimeoutError):
+                    # Send SIGTERM and wait before progressing to SIGKILL
+                    self.log.debug("Sending SIGTERM to minecraft server process %s", self.server_proc.pid)
+                    self.server_proc.send_signal(signal.SIGTERM)
+                    await asyncio.wait_for(self.server_proc.wait(), self.sigterm_timeout)
+                    shutdown = True
+                    self.log.debug("Minecraft server process exited after SIGTERM")
+        finally:
+            with suppress(Exception):
+                shutdown = self.server_proc.returncode is not None
+                if not shutdown:
+                    # Send SIGKILL
+                    self.log.debug("Sending SIGKILL to minecraft server process %s", self.server_proc.pid)
+                    self.server_proc.send_signal(signal.SIGKILL)
+                    self.log.debug("Minecraft server process exited after SIGKILL")
+            await super()._stop(*args)
 
     async def read_pipe(self, pipe):
         msg = b""
