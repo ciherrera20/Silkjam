@@ -236,12 +236,12 @@ class MCProxy(BaseAsyncContextManager):
             packet_writer = PacketWriter(writer, timeout=30)
             backend, handshake, is_legacy_ping = await self._identify_backend(packet_reader)
             if backend is not None:
-                if not backend.server_proc_running():
+                if not backend.mcproc_running():
                     # Start server if a player is trying to join
                     player_joining = is_legacy_ping or handshake["next_state"] == 2
-                    if not backend.server_proc_starting() and player_joining:
+                    if not backend.mcproc_starting() and player_joining:
                         self.log.info("Starting backend server %s", backend.name)
-                        backend.start_server_proc()  # Start actual server process
+                        backend.start_mcproc()  # Start actual server process
 
                     # Respond to client while server is sleeping
                     await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer)
