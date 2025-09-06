@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections import namedtuple
 from collections.abc import Buffer
+from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -190,21 +191,31 @@ class PacketReader:
     ############################################################################################################
 
     @staticmethod
-    def _allocate_buffer(data: memoryview, i: int, j: int, n: int, min_buffer_size: int=DEFAULT_BUFFER_SIZE, min_free_space: int=MIN_READ_SIZE) -> tuple[memoryview, int, int, int]:
+    def _allocate_buffer(
+            data: memoryview,
+            i: int,
+            j: int,
+            k: int,
+            n: int,
+            min_buffer_size: int=DEFAULT_BUFFER_SIZE,
+            min_free_space: int=MIN_READ_SIZE,
+            save: bool=False
+        ) -> tuple[memoryview, int, int, int]:
         # j - i is how much space we still have occupied
+        k = k if save else i  # save bytes k:j or i:j
         old_data = data
-        if j - i < n - (n >> 2):  # Less than 1/4 of the buffer will be occupied with unparsed data
+        if j - k < n - (n >> 2):  # Less than 1/4 of the buffer will be occupied with unparsed data
             # Halve buffer, not going below default buffer size
             n = max(n >> 1, min_buffer_size)
-        elif j - i > n - min_free_space:  # Buffer is completely occupied with unparsed data
+        elif j - k > n - min_free_space:  # Buffer is completely occupied with unparsed data
             # Double buffer
             n <<= 1
-        logger.debug("Allocating new %s byte buffer", n)
+        # logger.debug("Allocating new %s byte buffer", n)
         data = memoryview(bytearray(n))
-        data[:j-i] = old_data[i:j]  # Copy unparsed data
-        j -= i
-        i = 0
-        return data, i, j, n
+        data[:j-k] = old_data[k:j]  # Copy saved data
+        j -= k
+        i -= k
+        return data, i, j, k, n
 
     def __init__(self, reader: asyncio.StreamReader, initial_data: Buffer=b"", timeout: int | None=None):
         self.reader = reader
@@ -214,99 +225,106 @@ class PacketReader:
         # data = [parsed data] + [unparsed data] + [free space]
         self.i = 0                    # Start of unparsed data
         self.j = len(initial_data)    # Start of unread data
+        self.k = 0                    # Start of saved data. Should never be less than i.
         self.n = self.DEFAULT_BUFFER_SIZE  # Size of buffer
-        self.data, self.i, self.j, self.n = self._allocate_buffer(initial_data, self.i, self.j, self.n)
+        self.data, self.i, self.j, self.k, self.n = self._allocate_buffer(initial_data, self.i, self.j, self.k, self.n)
         self.packet_length = None
         self.timeout = timeout
         self._lock = asyncio.Lock()
+        self._save = False
 
     @property
     def unparsed(self) -> memoryview:
         return self.data[self.i:self.j]
 
+    @property
+    def saved(self) -> memoryview:
+        return self.data[self.k:self.j]
+
     async def _read_legacy_ping(self) -> dict:
         async with self._lock:
-            data, i, j, n = self.data, self.i, self.j, self.n
+            data, i, j, k, n, save = self.data, self.i, self.j, self.k, self.n, self._save
             try:
                 while True:
                     try:
-                        logger.debug("Parsing %s bytes as legacy ping", j-i)
+                        # logger.debug("Parsing %s bytes as legacy ping", j-i)
                         total_length, legacy_ping = self.decode_legacy_ping(data[i:j])
                     except asyncio.IncompleteReadError:
-                        logger.debug("Incomplete legacy ping")
+                        # logger.debug("Incomplete legacy ping")
                         if (n - j) < self.MIN_READ_SIZE:  # Need to allocate a new buffer
-                            logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
-                            data, i, j, n = self._allocate_buffer(data, i, j, n)
+                            # logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                            data, i, j, k, n = self._allocate_buffer(data, i, j, k, n, save=save)
                         new_data = await self.reader.read(n - j)
-                        logger.debug("Read %s bytes from client", len(new_data))
+                        # logger.debug("Read %s bytes from client", len(new_data))
                         if len(new_data) == 0:
                             raise ConnectionResetError
                         data[j:j+len(new_data)] = new_data
                         j += len(new_data)
                     except MCProtocolError as err:
-                        logger.debug("Could not parse %s bytes as legacy ping: %s", j-i, err)
+                        # logger.debug("Could not parse %s bytes as legacy ping: %s", j-i, err)
                         raise
                     else:
                         i += total_length  # Update start of unparsed bytes
                         return legacy_ping
                     finally:
-                        logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                        # logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                        pass
             finally:
-                self.data, self.i, self.j, self.n = data, i, j, n
+                self.data, self.i, self.j, self.k, self.n = data, i, j, k, n
 
     async def read_legacy_ping(self, timeout: int | None=None) -> dict:
         return await asyncio.wait_for(self._read_legacy_ping(), timeout)
 
     async def _read_packet(self) -> Packet[memoryview]:
         async with self._lock:
-            data, i, j, n, packet_length = self.data, self.i, self.j, self.n, self.packet_length
+            data, i, j, k, n, packet_length = self.data, self.i, self.j, self.k, self.n, self.packet_length
             try:
                 while True:
                     try:
                         if packet_length is None:
-                            logger.debug("Parsing %s bytes as VarInt", j-i)
+                            # logger.debug("Parsing %s bytes as VarInt", j-i)
                             _, packet_length = self.decode_varint(data[i:j])
                     except asyncio.IncompleteReadError:
-                        logger.debug("Incomplete VarInt")
+                        # logger.debug("Incomplete VarInt")
                         if (n - j) < self.MIN_READ_SIZE:  # Need to allocate a new buffer
-                            logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
-                            data, i, j, n = self._allocate_buffer(data, i, j, n)
+                            # logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                            data, i, j, k, n = self._allocate_buffer(data, i, j, k, n, save=self._save)
                         new_data = await self.reader.read(n - j)
-                        logger.debug("Read %s bytes from client", len(new_data))
+                        # logger.debug("Read %s bytes from client", len(new_data))
                         if len(new_data) == 0:
                             raise ConnectionResetError
                         data[j:j+len(new_data)] = new_data
                         j += len(new_data)
                     except MCProtocolError as err:
-                        logger.debug("Could not parse %s bytes as VarInt: %s", j-i, err)
+                        # logger.debug("Could not parse %s bytes as VarInt: %s", j-i, err)
                         raise
                     else:
                         try:
-                            logger.debug("Parsing %s bytes as packet", j-i)
+                            # logger.debug("Parsing %s bytes as packet", j-i)
                             total_length, (packet_id, packet_data) = self.decode_packet(data[i:j])
                         except asyncio.IncompleteReadError:
-                            logger.debug("Incomplete packet")
+                            # logger.debug("Incomplete packet")
                             if (n - j) < min(self.MIN_READ_SIZE, packet_length):  # Need to allocate a new buffer
-                                logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
-                                data, i, j, n = self._allocate_buffer(data, i, j, n)
+                                # logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                                data, i, j, k, n = self._allocate_buffer(data, i, j, k, n, save=self._save)
                             new_data = await self.reader.read(n - j)
-                            logger.debug("Read %s bytes from client", len(new_data))
+                            # logger.debug("Read %s bytes from client", len(new_data))
                             if len(new_data) == 0:
                                 raise ConnectionResetError
                             data[j:j+len(new_data)] = new_data
                             j += len(new_data)
                         except MCProtocolError as err:
-                            logger.debug("Could not parse %s bytes as packet: %s", j-i, err)
+                            # logger.debug("Could not parse %s bytes as packet: %s", j-i, err)
                             raise
                         else:
                             i += total_length  # Update start of unparsed bytes
                             packet_length = None
                             return total_length, (packet_id, packet_data)
                     finally:
-                        logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                        # logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                        pass
             finally:
-                self.data, self.i, self.j, self.n, self.packet_length = data, i, j, n, packet_length
-                
+                self.data, self.i, self.j, self.k, self.n, self.packet_length = data, i, j, k, n, packet_length
 
     async def read_packet(self, timeout: int | None=None) -> Packet[memoryview]:
         return await asyncio.wait_for(self._read_packet(), timeout or self.timeout)
@@ -322,6 +340,14 @@ class PacketReader:
 
     async def read_pingpong_packet(self, timeout: int | None=None) -> int:
         return self.decode_pingpong_packet(await self.read_packet(timeout=timeout or self.timeout))[1]
+
+    @asynccontextmanager
+    async def save(self):
+        try:
+            self._save = True
+            yield self
+        finally:
+            self._save = False
 
 ####################################################################################################################
 
