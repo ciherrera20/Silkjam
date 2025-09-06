@@ -193,7 +193,6 @@ class MCProxy(BaseAsyncContextManager):
                 initial_data = packet_writer.encode_handshake_packet(**handshake)
                 player_joining = handshake["next_state"] == 2
             initial_data += packet_reader.unparsed.tobytes()
-            self.log.debug("Initial data: %s", initial_data)
 
             if player_joining:
                 backend.incr_online_players()
