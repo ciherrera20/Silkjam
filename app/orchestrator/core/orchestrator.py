@@ -46,6 +46,7 @@ class MCOrchestrator(Supervisor):
 
         # Open and read config file
         self.config = Config.load(self.root / "config.json")
+        self.config.dump(self.root / "config.json")
         self._config_changed.set()
 
     @contextmanager

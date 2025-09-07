@@ -52,4 +52,4 @@ class Config(BaseModel):
         return config
 
     def dump(self, path: Path):
-        path.write_text(self.model_dump_json(indent=4, by_alias=True, exclude_unset=True))
+        path.write_text(self.model_dump_json(indent=4, by_alias=True))
