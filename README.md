@@ -43,6 +43,10 @@ minecraft-orchestrator/
 - Add capability to backup to remote drive
 - Figure out why when spamming connect as the server starts, all future connects just show Server disconnected message
 - Still not happy with overall organization. Move docker stuff and env stuff back out into project root. Also, think about portability of project_environment
+- Add queue for initializing server processes to avoid overwhelming the machine
+    - Add config option for the number of concurrent server starts
+    - Maybe not necessary?
+- Add cooldown between backend server restarts?
 
 # IN PROGRESS
 

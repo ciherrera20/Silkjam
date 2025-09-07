@@ -165,11 +165,12 @@ class MCProc(BaseAsyncContextManager):
             await asyncio.sleep(ping_interval)
         self.log.debug("Received ping response")
 
-    async def wait_until_done_initializing(self, stdout_timeout=180, ping_timeout=180, ping_interval=5):
+    async def wait_until_done_initializing(self, stdout_timeout=300, ping_timeout=60, ping_interval=5):
         try:
             await asyncio.wait_for(self.read_stdout_until_done_initializing(), stdout_timeout)
         except asyncio.TimeoutError:
             self.log.error("Did not receive server started log")
+            raise
 
         try:
             await asyncio.wait_for(self.ping_server_until_done_initializing(ping_interval), ping_timeout)
