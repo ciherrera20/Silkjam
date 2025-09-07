@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 MINECRAFT_PORT = os.environ.get("MINECRAFT_PORT", 25565)
 SERVER_PORTS = os.environ.get("SERVER_PORTS", "40000:45000")
 
-class PortSlotError(RuntimeError):
+class AcquirePortError(RuntimeError):
     pass
 
 class MCOrchestrator(Supervisor):
@@ -61,17 +61,23 @@ class MCOrchestrator(Supervisor):
 
         # Allocate it
         if port is None:
-            raise PortSlotError(f"Could not acquire port in range {lo}:{hi}")
+            raise AcquirePortError(f"Could not acquire port in range {lo}:{hi}")
 
         self.log.debug("Acquiring port %s", port)
         self.acquired_server_ports.add(port)
 
-        # Yield and deallocate after
+        # Yield port and deallocate after its done being used
         try:
             yield port
         finally:
             self.log.debug("Releasing port %s", port)
             self.acquired_server_ports.discard(port)
+
+    def update_config(self):
+        # Dump updated config and flag change
+        self.config.dump(self.root / "config.json")
+        self.config.validate_semantics()
+        self._config_changed.set()
 
     def reload_config(self):
         # Start proxies in the listing that are not currently running
@@ -81,9 +87,16 @@ class MCOrchestrator(Supervisor):
             proxy_listing_names.add(name)
             if name not in self.proxies:
                 self.log.info("Found proxy listing entry %s", name)
-                proxy = MCProxy(listing)
-                self.proxies[name] = proxy
-                self.add_unit(proxy, proxy.serve_forever)
+                if not listing.valid:
+                    self.log.error("Skipping invalid proxy listing entry %s with the following error(s):", name)
+                    for msg in listing.errors:
+                        self.log.error(msg)
+                elif not listing.enabled:
+                    self.log.info("Skipping disabled proxy listing entry %s", name)
+                else:
+                    proxy = MCProxy(listing)
+                    self.proxies[name] = proxy
+                    self.add_unit(proxy, proxy.serve_forever)
 
         # Cleanup any proxies in the listing that no longer exist
         removed_proxy_names = set()
@@ -101,9 +114,17 @@ class MCOrchestrator(Supervisor):
             backend_names.add(name)
             if name not in self.backends:
                 self.log.info("Found server listing entry %s", name)
-                backend = MCBackend(self.root / name, self.acquire_port, listing)
-                self.backends[name] = backend
-                self.add_unit(backend, backend.serve_forever)
+                if not listing.valid:
+                    self.log.error("Skipping invalid server listing entry %s with the following error(s):", name)
+                    for msg in listing.errors:
+                        self.log.error(msg)
+                elif not listing.enabled:
+                    self.log.info("Skipping disabled server listing entry %s", name)
+                else:
+                    backend = MCBackend(self.root / name, self.acquire_port, listing)
+                    backend.on_listing_change(self.update_config)
+                    self.backends[name] = backend
+                    self.add_unit(backend, backend.serve_forever)
 
         # Cleanup any servers in the listing that no longer exist
         removed_backend_names = set()
@@ -132,7 +153,7 @@ class MCOrchestrator(Supervisor):
             for unit in done_units:
                 if isinstance(unit, MCBackend):
                     result = done_units[unit]
-                    if isinstance(result, PortSlotError):
+                    if isinstance(result, AcquirePortError):
                         self.log.error("Stopping %s: could not acquire backend port", unit.name)
                         self.stop_unit_nowait(unit)
 

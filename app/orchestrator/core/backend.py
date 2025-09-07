@@ -1,7 +1,6 @@
 import base64
 import asyncio
 import logging
-import jproperties
 from pathlib import Path
 from contextlib import AbstractContextManager
 
@@ -11,8 +10,7 @@ from contextlib import AbstractContextManager
 from .supervisor import Supervisor, Timer
 from .mcproc import MCProc
 from utils.logger_adapters import PrefixLoggerAdapter
-from models.config import ServerListing
-from models.serverproperties import ServerProperties
+from models.config import ServerListing, Version, UNKNOWN_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +38,17 @@ class MCBackend(Supervisor):
             self.add_unit(self.mcproc, self.mcproc.monitor, restart=True, stopped=False)
         else:
             self.sleep_timer = Timer(listing.sleep_properties.timeout)
-            self.add_unit(self.mcproc, self.mcproc.monitor, restart=True, stopped=True)
+            self.add_unit(self.mcproc, self.mcproc.monitor, restart=True, stopped=(listing.version != UNKNOWN_VERSION))
             self.add_unit(self.sleep_timer, self.sleep_timer.wait, restart=False, stopped=True)
+        self.mcproc.on_server_list_ping(self.update_stats)
 
         self._online_players = 0  # Keep track of number of players connected to server
         self._start_mcproc = asyncio.Event()
         self._stop_mcproc = asyncio.Event()
         self._online_player_change: asyncio.Event = asyncio.Event()
         self._online_player_change.set()
+
+        self.listing_change_cb = None
 
     @property
     def name(self):
@@ -95,6 +96,17 @@ class MCBackend(Supervisor):
     @property
     def waking_kick_msg(self):
         return self.listing.sleep_properties.waking_kick_msg
+
+    def on_listing_change(self, cb):
+        self.listing_change_cb = cb
+
+    def update_stats(self, stats):
+        self.online_players = stats["players"]["online"]
+        version = Version(**stats["version"])
+        if self.listing.version != version:
+            self.listing.version = version
+            if self.listing_change_cb is not None:
+                self.listing_change_cb()
 
     async def _start(self):
         await super()._start()

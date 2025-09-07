@@ -9,7 +9,8 @@ from contextlib import suppress, AbstractContextManager, AsyncExitStack
 # Project imports
 #
 from .baseacm import BaseAsyncContextManager
-from .client import MCClient
+# from .client import MCClient
+from mctools import AsyncPINGClient
 from utils.logger_adapters import PrefixLoggerAdapter, BytesLoggerAdapter
 from models.serverproperties import ServerProperties
 
@@ -45,6 +46,8 @@ class MCProc(BaseAsyncContextManager):
         self.sigterm_timeout = sigterm_timeout
         self.stack: AsyncExitStack
         self.server_proc: asyncio.Process
+
+        self.server_list_ping_cb = None
 
     async def _start(self):
         await super()._start()
@@ -154,13 +157,13 @@ class MCProc(BaseAsyncContextManager):
 
     async def ping_server_until_done_initializing(self, ping_interval=1):
         while True:
-            self.log.debug("Sending server listing ping...")
-            async with MCClient("0.0.0.0", self.properties.server_port) as client:
-                with suppress(OSError):
-                    await client.request_status()
+            self.log.debug("Sending ping...")
+            async with AsyncPINGClient("0.0.0.0", self.properties.server_port) as client:
+                with suppress(Exception):
+                    await client.ping()
                     break
             asyncio.sleep(ping_interval)
-        self.log.debug("Received server listing ping response")
+        self.log.debug("Received ping response")
 
     async def wait_until_done_initializing(self, stdout_timeout=60, ping_timeout=60, ping_interval=1):
         try:
@@ -180,17 +183,41 @@ class MCProc(BaseAsyncContextManager):
         async for msg in pipe:
             pipe_logger.log(level, msg)
 
+    async def request_status_continuously(self, interval=60, max_retries=3):
+        retry_count = 0
+        while True:
+            try:
+                async with AsyncPINGClient("0.0.0.0", self.properties.server_port) as client:
+                    stats = await client.get_stats()
+            except Exception:
+                retry_count += 1
+                if retry_count > max_retries:
+                    self.log.error("Server process not responding to status requests")
+                    raise
+                else:
+                    self.log.warning("Server process did not respond to status request, trying again")
+            else:
+                self.log.debug("Server process responded to status request")
+                retry_count = 0
+                if self.server_list_ping_cb is not None:
+                    self.server_list_ping_cb(stats)
+                await asyncio.sleep(interval)
+
     async def monitor(self):
         self.log.debug("Starting server process monitor task for pid %s", self.server_proc.pid)
         try:
             await asyncio.gather(
                 self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL),
-                self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL)
+                self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL),
+                self.request_status_continuously(),
             )
             self.log.debug("Server process (pid %s) stopped communication", self.server_proc.pid)
         except asyncio.CancelledError:
             self.log.debug("Backend monitor task canceled")
             raise
+
+    def on_server_list_ping(self, cb):
+        self.server_list_ping_cb = cb
 
     def __repr__(self):
         return f"MCProc(\'{self.name}\')"
