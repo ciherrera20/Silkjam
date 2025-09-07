@@ -14,9 +14,9 @@ from contextlib import AbstractAsyncContextManager
 from core.protocol import (
     PacketReader,
     PacketWriter,
-    MCVersion,
     MCProtocolError
 )
+from models.config import Version
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,10 @@ class MCClient(AbstractAsyncContextManager):
     def __init__(
             self, hostname: str,
             port: int,
-            version: MCVersion=MCVersion("0.0.0", 127)
+            version: Version=Version(
+                name="0.0.0",
+                protocol=127
+            )
         ):
         self.hostname = hostname
         self.port = port

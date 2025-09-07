@@ -39,7 +39,7 @@ class ComposableLoggerAdapter(logging.LoggerAdapter):
 class PrefixLoggerAdapter(ComposableLoggerAdapter):
     """ A logger adapter that adds a prefix to every message """
     def process(self, msg: str, kwargs: dict) -> tuple[str, dict]:
-        return (f"[{self.extra}] " + msg, kwargs)
+        return (f"[{self.extra}] {msg}", kwargs)
 
 class BytesLoggerAdapter(ComposableLoggerAdapter):
     """ A logger adapter that takes bytes as messages and decodes them into strings """

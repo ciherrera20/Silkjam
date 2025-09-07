@@ -15,15 +15,20 @@ from .protocol import (
     MCProtocolError
 )
 from utils.logger_adapters import PrefixLoggerAdapter
+from models.config import ProxyListing
+
 logger = logging.getLogger(__name__)
 
 HOSTNAME = os.environ["HOSTNAME"]
 
 class MCProxy(BaseAsyncContextManager):
-    def __init__(self, listing):
+    def __init__(
+            self,
+            listing: ProxyListing
+        ):
         super().__init__()
-        self.name = listing["name"]
-        self.port = listing["port"]
+        self.name = listing.name
+        self.port = listing.port
         self.proxy_server: asyncio.Server
         self._backends = []
         self.subdomain_map = {}
@@ -184,7 +189,7 @@ class MCProxy(BaseAsyncContextManager):
         conn_logger.debug("Starting port forwarding to %s", backend.name)
         try:
             # Try connecting to the backend server
-            backend_reader, backend_writer = await asyncio.open_connection("0.0.0.0", backend.port)
+            backend_reader, backend_writer = await asyncio.open_connection("0.0.0.0", backend.server_port)
         except ConnectionRefusedError as err:
             # Backend server should be ready but is refusing connections
             conn_logger.error("Backend server %s should be ready, but is not accepting connections", backend.name)

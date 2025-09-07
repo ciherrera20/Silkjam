@@ -2,7 +2,8 @@ import re
 import signal
 import asyncio
 import logging
-from contextlib import suppress
+from pathlib import Path
+from contextlib import suppress, AbstractContextManager, AsyncExitStack
 
 #
 # Project imports
@@ -10,6 +11,9 @@ from contextlib import suppress
 from .baseacm import BaseAsyncContextManager
 from .client import MCClient
 from utils.logger_adapters import PrefixLoggerAdapter, BytesLoggerAdapter
+from models.serverproperties import ServerProperties
+
+type PortCMFactory = callable[[], AbstractContextManager[int]]
 
 class MCProc(BaseAsyncContextManager):
     STARTING_SERVER_REGEX = re.compile(rb"^.*:(\d{5}).*$")
@@ -18,19 +22,44 @@ class MCProc(BaseAsyncContextManager):
     STDOUT_LOG_LEVEL = logging.DEBUG
     STDERR_LOG_LEVEL = logging.ERROR
 
-    def __init__(self, backend, stop_timeout=90, sigint_timeout=90, sigterm_timeout=90):
+    def __init__(
+            self,
+            root: Path,
+            name: str,
+            port_factory: PortCMFactory,
+            logger: logging.Logger | logging.LoggerAdapter | None=None,
+            stop_timeout: int=90,
+            sigint_timeout: int=90,
+            sigterm_timeout: int=90
+        ):
         super().__init__()
-        self.backend = backend
-        self.log = PrefixLoggerAdapter(backend.log, 'server_proc')
-        self.root = backend.root
-        self.name = backend.name
+        if logger is None:
+            logger = logging.getLogger(__name__)
+        self.log = PrefixLoggerAdapter(logger, 'server_proc')
+        self.root = root
+        self.name = name
+        self.port_factory = port_factory
+        self.properties = ServerProperties.load(self.root / "server.properties")
         self.stop_timeout = stop_timeout
         self.sigint_timeout = sigint_timeout
         self.sigterm_timeout = sigterm_timeout
+        self.stack: AsyncExitStack
         self.server_proc: asyncio.Process
 
     async def _start(self):
         await super()._start()
+
+        self.stack = AsyncExitStack()
+        await self.stack.__aenter__()
+
+        # Allocate ports and write server properties
+        server_port = self.stack.enter_context(self.port_factory())
+        rcon_port = self.stack.enter_context(self.port_factory())
+        self.properties = ServerProperties.load(self.root / "server.properties")
+        self.properties.server_port = server_port
+        self.properties.rcon_port = rcon_port
+        self.properties.dump(self.root / "server.properties")
+
         server_jar_file = self.root / "server.jar"
         self.server_proc = await asyncio.create_subprocess_exec(
             "java", "-Xmx2G", "-jar", server_jar_file, "nogui",
@@ -105,6 +134,7 @@ class MCProc(BaseAsyncContextManager):
                     self.log.debug("Minecraft server process exited after SIGKILL")
 
         await asyncio.gather(log_stdout_task, log_stderr_task)
+        await self.stack.__aexit__(*args)
         await super()._stop(*args)
 
     async def read_stdout_until_done_initializing(self):
@@ -112,7 +142,7 @@ class MCProc(BaseAsyncContextManager):
         async for msg in self.server_proc.stdout:
             pipe_logger.log(self.STDOUT_LOG_LEVEL, msg)
             if m := self.STARTING_SERVER_REGEX.match(msg):
-                if m.group(1) == str(self.backend.port).encode("utf-8"):
+                if m.group(1) == str(self.properties.server_port).encode("utf-8"):
                     self.log.debug("Read server starting msg")
                     break
 
@@ -125,7 +155,7 @@ class MCProc(BaseAsyncContextManager):
     async def ping_server_until_done_initializing(self, ping_interval=1):
         while True:
             self.log.debug("Sending server listing ping...")
-            async with MCClient("0.0.0.0", self.backend.port) as client:
+            async with MCClient("0.0.0.0", self.properties.server_port) as client:
                 with suppress(OSError):
                     await client.request_status()
                     break
@@ -151,7 +181,7 @@ class MCProc(BaseAsyncContextManager):
             pipe_logger.log(level, msg)
 
     async def monitor(self):
-        self.log.debug("Starting backend monitor task for pid %s", self.server_proc.pid)
+        self.log.debug("Starting server process monitor task for pid %s", self.server_proc.pid)
         try:
             await asyncio.gather(
                 self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL),

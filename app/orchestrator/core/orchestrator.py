@@ -12,6 +12,7 @@ from .supervisor import Supervisor
 from .backend import MCBackend
 from .proxy import MCProxy
 from utils.logger_adapters import PrefixLoggerAdapter
+from models.config import Config
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
@@ -30,8 +31,7 @@ class MCOrchestrator(Supervisor):
         self.root = Path(root)
 
         # Proxy and server listings
-        self.config_file = None
-        self.config = None
+        self.config: Config
         self._config_changed = asyncio.Event()  # Notify run_servers whenever the server listing changes
 
         self.proxies = {}  # Proxy name -> MCProxy object
@@ -45,28 +45,8 @@ class MCOrchestrator(Supervisor):
         await super()._start()
 
         # Open and read config file
+        self.config = Config.load(self.root / "config.json")
         self._config_changed.set()
-        self.config_file = self.stack.enter_context((self.root / "config.json").open("a+"))
-        self.config_file.seek(0)
-        try:
-            self.log.info("Reading config file")
-            self.config = json.load(self.config_file)
-            self.log.info("%s", self.config)
-        except json.JSONDecodeError:
-            self.log.info("Error reading config. Creating default config")
-            self.config = {
-                "proxy_listing": [
-                    {
-                        "name": "proxy1",
-                        "enabled": True,
-                        "port": MINECRAFT_PORT
-                    }
-                ],
-                "server_listing": []
-            }
-            self.config_file.truncate(0)
-            json.dump(self.config, self.config_file, indent=4)
-            self.config_file.flush()
 
     @contextmanager
     def acquire_port(self):
@@ -95,8 +75,8 @@ class MCOrchestrator(Supervisor):
     def reload_config(self):
         # Start proxies in the listing that are not currently running
         proxy_listing_names = set()
-        for listing in self.config["proxy_listing"]:
-            name = listing["name"]
+        for listing in self.config.proxy_listing:
+            name = listing.name
             proxy_listing_names.add(name)
             if name not in self.proxies:
                 self.log.info("Found proxy listing entry %s", name)
@@ -115,8 +95,8 @@ class MCOrchestrator(Supervisor):
 
         # Start servers in the listing that are not currently running
         backend_names = set()
-        for listing in self.config["server_listing"]:
-            name = listing["name"]
+        for listing in self.config.server_listing:
+            name = listing.name
             backend_names.add(name)
             if name not in self.backends:
                 self.log.info("Found server listing entry %s", name)
@@ -135,8 +115,8 @@ class MCOrchestrator(Supervisor):
 
         # Update all proxy backends
         proxy_backends = defaultdict(list)
-        for listing in self.config["server_listing"]:
-            proxy_backends[listing["proxy"]].append(self.backends[listing["name"]])
+        for listing in self.config.server_listing:
+            proxy_backends[listing.proxy].append(self.backends[listing.name])
         for name, proxy in self.proxies.items():
             proxy.backends = proxy_backends[name]
 
@@ -157,6 +137,4 @@ class MCOrchestrator(Supervisor):
 
     async def _stop(self, *args):
         # Write server listing file
-        self.config_file.truncate(0)
-        json.dump(self.config, self.config_file, indent=4)
         await super()._stop(*args)

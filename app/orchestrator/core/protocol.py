@@ -18,7 +18,6 @@ class PacketType(enum.IntEnum):
     REQUEST = 0
     PINGPONG = 1
 
-MCVersion = namedtuple("MCVersion", ["name", "protocol"])
 type Packet[T: Buffer] = tuple[int, tuple[int, T]]
 
 class MCProtocolError(ValueError):

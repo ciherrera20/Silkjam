@@ -8,10 +8,11 @@ from contextlib import AbstractContextManager
 #
 # Project imports
 #
-from .protocol import MCVersion
 from .supervisor import Supervisor, Timer
 from .mcproc import MCProc
 from utils.logger_adapters import PrefixLoggerAdapter
+from models.config import ServerListing
+from models.serverproperties import ServerProperties
 
 logger = logging.getLogger(__name__)
 
@@ -22,27 +23,25 @@ class MCBackend(Supervisor):
             self,
             root: Path,
             port_factory: PortCMFactory,
-            listing: dict
+            listing: ServerListing
         ):
         super().__init__()
         self.root = root
-        self.name = listing["name"]
-        self.port_factory = port_factory
-        self.log = PrefixLoggerAdapter(logger, self.name)
+        self.listing = listing
+        self.log = PrefixLoggerAdapter(logger, listing.name)
 
-        self.version = MCVersion(**listing["version"])
-        self.subdomain = listing["subdomain"]
-        self.sleep_properties = listing["sleep_properties"]
-        self.sleep_timeout = self.sleep_properties["timeout"]
-
-        self.properties = None
+        self.sleep_timer: Timer | None
         self.icon = None
 
         # Create units to supervise
-        self.mcproc: MCProc = MCProc(self)
-        self.sleep_timer: Timer = Timer(self.sleep_timeout)
-        self.add_unit(self.mcproc, self.mcproc.monitor, restart=True, stopped=True)
-        self.add_unit(self.sleep_timer, self.sleep_timer.wait, restart=False, stopped=True)
+        self.mcproc: MCProc = MCProc(self.root, listing.name, port_factory, self.log)
+        if listing.sleep_properties.timeout is None:
+            self.sleep_timer = None
+            self.add_unit(self.mcproc, self.mcproc.monitor, restart=True, stopped=False)
+        else:
+            self.sleep_timer = Timer(listing.sleep_properties.timeout)
+            self.add_unit(self.mcproc, self.mcproc.monitor, restart=True, stopped=True)
+            self.add_unit(self.sleep_timer, self.sleep_timer.wait, restart=False, stopped=True)
 
         self._online_players = 0  # Keep track of number of players connected to server
         self._start_mcproc = asyncio.Event()
@@ -50,29 +49,58 @@ class MCBackend(Supervisor):
         self._online_player_change: asyncio.Event = asyncio.Event()
         self._online_player_change.set()
 
+    @property
+    def name(self):
+        return self.listing.name
+
+    @property
+    def subdomain(self):
+        return self.listing.subdomain
+
+    @property
+    def version(self):
+        return self.listing.version
+
+    @property
+    def server_port(self):
+        return self.mcproc.properties.server_port
+
+    @property
+    def rcon_port(self):
+        return self.mcproc.properties.rcon_port
+
+    @property
+    def motd(self):
+        if self.mcproc_running():
+            return self.mcproc.properties.motd
+        else:
+            return self.listing.sleep_properties.motd or f"§e{self.mcproc.properties.motd}"
+
+    @property
+    def online_players(self):
+        if self.mcproc_running():
+            return self._online_players
+        else:
+            return self.listing.sleep_properties.online_players or self._online_players
+
+    @online_players.setter
+    def online_players(self, value):
+        self._online_players = value
+        self._online_player_change.set()
+
+    @property
+    def max_players(self):
+        if self.mcproc_running():
+            return self.mcproc.properties.max_players
+        else:
+            return self.listing.sleep_properties.max_players or self.mcproc.properties.max_players
+
+    @property
+    def waking_kick_msg(self):
+        return self.listing.sleep_properties.waking_kick_msg
+
     async def _start(self):
         await super()._start()
-
-        # Open and read server properties
-        self.properties = jproperties.Properties()
-        properties_path = (self.root / "server.properties")
-        if properties_path.exists():
-            self.log.info("Reading server properties")
-            with properties_path.open("r") as f:
-                self.properties.load(f.read())
-
-            # Write server port, rcon port, and rcon password
-            server_port = self.stack.enter_context(self.port_factory())
-            rcon_port = self.stack.enter_context(self.port_factory())
-            self.properties["server-port"] = str(server_port)
-            self.properties["rcon-port"] = str(rcon_port)
-            self.properties["rcon-password"] = ""
-            self.properties["enable-rcon"] = "true"
-
-            with properties_path.open("wb") as f:
-                self.properties.store(f)
-        else:
-            self.log.info("Server properties does not exist!")
 
         # Open and read icon if it exists
         icon_path = self.root / "world" / "icon.png"
@@ -114,54 +142,12 @@ class MCBackend(Supervisor):
                 self._stop_mcproc.clear()
             if self._online_player_change in done_events:
                 self.log.debug("Online players is %s", self.online_players)
-                self.reload_sleep_timer()
+                if self.sleep_timer is not None:
+                    self.reload_sleep_timer()
                 self._online_player_change.clear()
-            if self.sleep_timer in done_units and done_units[self.sleep_timer] is None:
-                self.log.info("No players connected for %ss, stopping server", self.sleep_timeout)
+            if self.sleep_timer is not None and self.sleep_timer in done_units and done_units[self.sleep_timer] is None:
+                self.log.info("No players connected for %ss, stopping server", self.listing.sleep_properties.timeout)
                 self.stop_mcproc()
-
-    @property
-    def port(self):
-        if "server-port" in self.properties:
-            return int(self.properties["server-port"].data)
-
-    @property
-    def motd(self):
-        if "motd" in self.properties:
-            motd_prop = self.properties["motd"].data
-        else:
-            motd_prop = None
-        if self.mcproc_running():
-            return motd_prop
-        else:
-            return self.sleep_properties.get("motd") or motd_prop
-
-    @property
-    def online_players(self):
-        if self.mcproc_running():
-            return self._online_players
-        else:
-            return self.sleep_properties.get("online-players") or self._online_players
-
-    @online_players.setter
-    def online_players(self, value):
-        self._online_players = value
-        self._online_player_change.set()
-
-    @property
-    def max_players(self):
-        if "max-players" in self.properties:
-            max_players_prop = int(self.properties["max-players"].data)
-        else:
-            max_players_prop = None
-        if self.mcproc_running():
-            return max_players_prop
-        else:
-            return self.sleep_properties.get("max-players") or max_players_prop
-
-    @property
-    def waking_kick_msg(self):
-        return self.sleep_properties.get("waking-kick-msg")
 
     def mcproc_starting(self):
         return self.is_starting(self.mcproc)
