@@ -81,7 +81,7 @@ class MCBackend(Supervisor):
         if self.mcproc_running():
             return self._online_players
         else:
-            return self.listing.sleep_properties.online_players or self._online_players
+            return 0
 
     @online_players.setter
     def online_players(self, value):
@@ -90,10 +90,7 @@ class MCBackend(Supervisor):
 
     @property
     def max_players(self):
-        if self.mcproc_running():
-            return self.mcproc.properties.max_players
-        else:
-            return self.listing.sleep_properties.max_players or self.mcproc.properties.max_players
+        return self.mcproc.properties.max_players
 
     @property
     def waking_kick_msg(self):

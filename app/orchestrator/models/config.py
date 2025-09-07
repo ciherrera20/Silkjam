@@ -9,8 +9,6 @@ class ProxyListing(BaseModel):
 
 class SleepProperties(BaseModel):
     timeout: int | None = None
-    online_players: int = Field(default=0, alias="online-players")
-    max_players: int | None = Field(default=None, alias="max-players")
     motd: str | None = None
     waking_kick_msg: str = Field(default="§eServer is waking up, try again in 30s", alias="waking-kick-msg")
 
