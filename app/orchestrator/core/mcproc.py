@@ -155,7 +155,7 @@ class MCProc(BaseAsyncContextManager):
                 self.log.debug("Read done msg")
                 break
 
-    async def ping_server_until_done_initializing(self, ping_interval=1):
+    async def ping_server_until_done_initializing(self, ping_interval=5):
         while True:
             self.log.debug("Sending ping...")
             async with AsyncPINGClient("0.0.0.0", self.properties.server_port) as client:
@@ -165,7 +165,7 @@ class MCProc(BaseAsyncContextManager):
             await asyncio.sleep(ping_interval)
         self.log.debug("Received ping response")
 
-    async def wait_until_done_initializing(self, stdout_timeout=60, ping_timeout=60, ping_interval=5):
+    async def wait_until_done_initializing(self, stdout_timeout=180, ping_timeout=180, ping_interval=5):
         try:
             await asyncio.wait_for(self.read_stdout_until_done_initializing(), stdout_timeout)
         except asyncio.TimeoutError:
