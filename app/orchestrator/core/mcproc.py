@@ -183,7 +183,7 @@ class MCProc(BaseAsyncContextManager):
         async for msg in pipe:
             pipe_logger.log(level, msg)
 
-    async def request_status_continuously(self, interval=60, max_retries=3):
+    async def request_status_continuously(self, interval=60, retry_interval=10, max_retries=3):
         retry_count = 0
         while True:
             try:
@@ -196,6 +196,7 @@ class MCProc(BaseAsyncContextManager):
                     raise
                 else:
                     self.log.warning("Server process did not respond to status request, trying again")
+                await asyncio.sleep(retry_interval)
             else:
                 self.log.debug("Server process responded to status request")
                 retry_count = 0
@@ -206,15 +207,22 @@ class MCProc(BaseAsyncContextManager):
     async def monitor(self):
         self.log.debug("Starting server process monitor task for pid %s", self.server_proc.pid)
         try:
-            await asyncio.gather(
-                self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL),
-                self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL),
-                self.request_status_continuously(),
-            )
+            tasks = [
+                asyncio.create_task(self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL)),
+                asyncio.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL)),
+                asyncio.create_task(self.request_status_continuously())
+            ]
+            await asyncio.gather(*tasks)
             self.log.debug("Server process (pid %s) stopped communication", self.server_proc.pid)
         except asyncio.CancelledError:
             self.log.debug("Backend monitor task canceled")
             raise
+        finally:
+            interrupted = []
+            for task in tasks:
+                if not task.done():
+                    interrupted.append(task)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def on_server_list_ping(self, cb):
         self.server_list_ping_cb = cb
