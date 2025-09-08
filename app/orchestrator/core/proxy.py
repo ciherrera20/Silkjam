@@ -252,21 +252,22 @@ class MCProxy(BaseAsyncContextManager):
             packet_reader = PacketReader(reader, timeout=30)
             packet_writer = PacketWriter(writer, timeout=30)
             backend, handshake, is_legacy_ping = await self._identify_backend(packet_reader, conn_logger)
-            if backend is not None and backend.started:
-                if not backend.mcproc_running():
-                    # Start server if a player is trying to join
-                    player_joining = is_legacy_ping or handshake["next_state"] == 2
-                    if not backend.mcproc_starting() and player_joining:
-                        conn_logger.info("Starting backend server %s", backend.name)
-                        backend.start_mcproc()  # Start actual server process
+            if backend is not None:
+                if backend.started:
+                    if not backend.mcproc_running():
+                        # Start server if a player is trying to join
+                        player_joining = is_legacy_ping or handshake["next_state"] == 2
+                        if not backend.mcproc_starting() and player_joining:
+                            conn_logger.info("Starting backend server %s", backend.name)
+                            backend.start_mcproc()  # Start actual server process
 
-                    # Respond to client while server is sleeping
-                    await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
+                        # Respond to client while server is sleeping
+                        await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
+                    else:
+                        # Backend server is running, forward packets to it
+                        await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
                 else:
-                    # Backend server is running, forward packets to it
-                    await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
-            elif not backend.started:
-                conn_logger.debug("%s backend is down, closing connection", backend.name)
+                    conn_logger.debug("%s backend is down, closing connection", backend.name)
             else:
                 conn_logger.debug("Could not identify backend, closing connection")
         except Exception as err:
