@@ -20,6 +20,7 @@ from models.config import ProxyListing
 logger = logging.getLogger(__name__)
 
 HOSTNAME = os.environ["HOSTNAME"]
+HOLD_TIMEOUT = 25
 
 class MCProxy(BaseAsyncContextManager):
     def __init__(
@@ -257,14 +258,30 @@ class MCProxy(BaseAsyncContextManager):
                     if not backend.mcproc_running():
                         # Start server if a player is trying to join
                         player_joining = is_legacy_ping or handshake["next_state"] == 2
-                        if not backend.mcproc_starting() and player_joining:
-                            conn_logger.info("Starting backend server %s", backend.name)
-                            backend.start_mcproc()  # Start actual server process
+                        if player_joining:
+                            # Set server running if it isn't already
+                            if not backend.mcproc_starting():
+                                conn_logger.info("Starting backend server %s", backend.name)
+                                backend.start_mcproc()
 
-                        # Respond to client while server is sleeping
-                        await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
+                            # Keep client connected until server starts (or fails to start)
+                            started = False
+                            with suppress(asyncio.TimeoutError):
+                                started = await asyncio.wait_for(backend.mcproc_done_starting(), HOLD_TIMEOUT)
+
+                            if started:
+                                # Forward client logging in to backend if it started successfully
+                                conn_logger.debug("Backend server started successfully")
+                                await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
+                            else:
+                                # Respond to client logging in if server failed to start
+                                conn_logger.debug("Backend server failed to start")
+                                await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)        
+                        else:
+                            # Respond to client not logging in while server is sleeping
+                            await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)        
                     else:
-                        # Backend server is running, forward packets to it
+                        # Backend server is running, forward packets to it regardless of whether the client is logging in or not
                         await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
                 else:
                     conn_logger.debug("%s backend is down, closing connection", backend.name)

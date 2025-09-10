@@ -21,7 +21,7 @@ class ProxyListing(BaseModel):
 class SleepProperties(BaseModel):
     timeout: int | None = None
     motd: str | None = None
-    waking_kick_msg: str = Field(default="§eServer is waking up, try again in 30s", alias="waking-kick-msg")
+    waking_kick_msg: str = Field(default="§eServer is waking up, try again soon...", alias="waking-kick-msg")
 
 class Version(BaseModel):
     name: str
