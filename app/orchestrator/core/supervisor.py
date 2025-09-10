@@ -284,17 +284,17 @@ class Supervisor(BaseAsyncContextManager):
                             raise RuntimeError(f"{unit} has not been added or has been removed")
                         else:
                             state = self._units[unit]
-                            if state.pending_start:
-                                if state.force_pending_stop:
-                                    self.log.debug("%s is pending start, scheduling forced STOP for when it starts", unit)
-                                else:
-                                    self.log.debug("%s is pending start, scheduling STOP for after it finishes starting", unit)
-                            elif state.status == Status.ENTERING:
+                            if state.status == Status.ENTERING:
                                 if state.force_pending_stop:
                                     self.log.debug("%s is currently starting, forcing STOP", unit)
                                     self._stop_unit(unit)
                                 else:
                                     self.log.debug("%s is currently starting, scheduling STOP for after it finishes starting", unit)
+                            elif state.pending_start:
+                                if state.force_pending_stop:
+                                    self.log.debug("%s is pending start, scheduling forced STOP for when it starts", unit)
+                                else:
+                                    self.log.debug("%s is pending start, scheduling STOP for after it finishes starting", unit)
                             elif state.task is None:
                                 raise RuntimeError(f"{unit} is not running")
                             else:
