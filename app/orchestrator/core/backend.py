@@ -134,13 +134,13 @@ class MCBackend(Supervisor):
             self.stop_unit_nowait(self.sleep_timer)
 
     async def serve_forever(self):
-        await self.done_starting(self.mcproc)  # Await initial start
+        await self.supervise_until_done_starting(self.mcproc)  # Await initial start
         while True:
             # Wait until the config changes or a proxy or server task is canceled or errors out
             (done_events, done_units), (_, _) = await self.supervise_until([self._start_mcproc, self._stop_mcproc, self._online_player_change])
             if self._start_mcproc in done_events:
                 self.log.debug("Start server requested")
-                await self.done_stopping(self.mcproc)
+                await self.supervise_until_done_stopping(self.mcproc)
                 await self.start_unit(self.mcproc)
                 self.online_players = 0
                 self._start_mcproc.clear()
@@ -166,6 +166,15 @@ class MCBackend(Supervisor):
 
     def mcproc_stopping(self):
         return self.is_stopping(self.mcproc)
+
+    async def mcproc_done_starting(self):
+        await self.done_stopping(self.mcproc)
+        self.start_unit_nowait(self.mcproc)
+        return await self.done_starting(self.mcproc)
+
+    async def mcproc_done_stopping(self):
+        self.stop_unit_nowait(self.mcproc)
+        return await self.done_stopping(self.mcproc)
 
     def start_mcproc(self):
         self._start_mcproc.set()
