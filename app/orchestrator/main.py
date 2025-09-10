@@ -21,6 +21,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]  # ensure logs go to stdout for Docker
 )
 logging.getLogger("asyncio").setLevel(logging.WARNING)
+logging.getLogger("core.protocol").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 logger.info("Logging level is %s", level)
 

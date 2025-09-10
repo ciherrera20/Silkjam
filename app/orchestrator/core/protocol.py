@@ -30,8 +30,9 @@ class MCProtocolError(ValueError):
         self.data = data
 
 class PacketReader:
-    DEFAULT_BUFFER_SIZE = 1 << 12
-    MIN_READ_SIZE = 1 << 10
+    DEFAULT_BUFFER_SIZE = 1 << 12  # 4 KiB
+    MAX_BUFFER_SIZE = 1 << 23      # 8 MiB
+    MIN_READ_SIZE = 1 << 10        # 1 KiB
 
     ############################################# Decode functions #############################################
 
@@ -197,6 +198,7 @@ class PacketReader:
             k: int,
             n: int,
             min_buffer_size: int=DEFAULT_BUFFER_SIZE,
+            max_buffer_size: int=MAX_BUFFER_SIZE,
             min_free_space: int=MIN_READ_SIZE,
             save: bool=False
         ) -> tuple[memoryview, int, int, int]:
@@ -208,8 +210,8 @@ class PacketReader:
             n = max(n >> 1, min_buffer_size)
         elif j - k > n - min_free_space:  # Buffer is completely occupied with unparsed data
             # Double buffer
-            n <<= 1
-        # logger.debug("Allocating new %s byte buffer", n)
+            n = min(n << 1, max_buffer_size)
+        logger.debug("Allocating new %s byte buffer", n)
         data = memoryview(bytearray(n))
         data[:j-k] = old_data[k:j]  # Copy saved data
         j -= k
@@ -246,27 +248,29 @@ class PacketReader:
             try:
                 while True:
                     try:
-                        # logger.debug("Parsing %s bytes as legacy ping", j-i)
+                        logger.debug("Parsing %s bytes as legacy ping", j-i)
                         total_length, legacy_ping = self.decode_legacy_ping(data[i:j])
                     except asyncio.IncompleteReadError:
-                        # logger.debug("Incomplete legacy ping")
+                        logger.debug("Incomplete legacy ping")
                         if (n - j) < self.MIN_READ_SIZE:  # Need to allocate a new buffer
-                            # logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                            logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
                             data, i, j, k, n = self._allocate_buffer(data, i, j, k, n, save=save)
+                        if j == n:  # We already resized the buffer, but we hit its max size
+                            raise MCProtocolError(data, "Exceeded maximum buffer size")
                         new_data = await self.reader.read(n - j)
-                        # logger.debug("Read %s bytes from client", len(new_data))
+                        logger.debug("Read %s bytes from client", len(new_data))
                         if len(new_data) == 0:
                             raise ConnectionResetError
                         data[j:j+len(new_data)] = new_data
                         j += len(new_data)
                     except MCProtocolError as err:
-                        # logger.debug("Could not parse %s bytes as legacy ping: %s", j-i, err)
+                        logger.debug("Could not parse %s bytes as legacy ping: %s", j-i, err)
                         raise
                     else:
                         i += total_length  # Update start of unparsed bytes
                         return legacy_ping
                     finally:
-                        # logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                        logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
                         pass
             finally:
                 self.data, self.i, self.j, self.k, self.n = data, i, j, k, n
@@ -281,46 +285,50 @@ class PacketReader:
                 while True:
                     try:
                         if packet_length is None:
-                            # logger.debug("Parsing %s bytes as VarInt", j-i)
+                            logger.debug("Parsing %s bytes as VarInt", j-i)
                             _, packet_length = self.decode_varint(data[i:j])
                     except asyncio.IncompleteReadError:
-                        # logger.debug("Incomplete VarInt")
+                        logger.debug("Incomplete VarInt")
                         if (n - j) < self.MIN_READ_SIZE:  # Need to allocate a new buffer
-                            # logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                            logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
                             data, i, j, k, n = self._allocate_buffer(data, i, j, k, n, save=self._save)
+                        if j == n:  # We already resized the buffer, but we hit its max size
+                            raise MCProtocolError(data, "Exceeded maximum buffer size")
                         new_data = await self.reader.read(n - j)
-                        # logger.debug("Read %s bytes from client", len(new_data))
+                        logger.debug("Read %s bytes from client", len(new_data))
                         if len(new_data) == 0:
                             raise ConnectionResetError
                         data[j:j+len(new_data)] = new_data
                         j += len(new_data)
                     except MCProtocolError as err:
-                        # logger.debug("Could not parse %s bytes as VarInt: %s", j-i, err)
+                        logger.debug("Could not parse %s bytes as VarInt: %s", j-i, err)
                         raise
                     else:
                         try:
-                            # logger.debug("Parsing %s bytes as packet", j-i)
+                            logger.debug("Parsing %s bytes as packet", j-i)
                             total_length, (packet_id, packet_data) = self.decode_packet(data[i:j])
                         except asyncio.IncompleteReadError:
-                            # logger.debug("Incomplete packet")
+                            logger.debug("Incomplete packet")
                             if (n - j) < min(self.MIN_READ_SIZE, packet_length):  # Need to allocate a new buffer
-                                # logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                                logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
                                 data, i, j, k, n = self._allocate_buffer(data, i, j, k, n, save=self._save)
+                            if j == n:  # We already resized the buffer, but we hit its max size
+                                raise MCProtocolError(data, "Exceeded maximum buffer size")
                             new_data = await self.reader.read(n - j)
-                            # logger.debug("Read %s bytes from client", len(new_data))
+                            logger.debug("Read %s bytes from client", len(new_data))
                             if len(new_data) == 0:
                                 raise ConnectionResetError
                             data[j:j+len(new_data)] = new_data
                             j += len(new_data)
                         except MCProtocolError as err:
-                            # logger.debug("Could not parse %s bytes as packet: %s", j-i, err)
+                            logger.debug("Could not parse %s bytes as packet: %s", j-i, err)
                             raise
                         else:
                             i += total_length  # Update start of unparsed bytes
                             packet_length = None
                             return total_length, (packet_id, packet_data)
                     finally:
-                        # logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                        logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
                         pass
             finally:
                 self.data, self.i, self.j, self.k, self.n, self.packet_length = data, i, j, k, n, packet_length
