@@ -63,7 +63,7 @@ if __name__ == "__main__":
             units = [Unit(f"unit {i}") for i in range(1)]
             for unit in units:
                 supervisor.add_unit(unit, unit.run_forever, restart=False, stopped=False)
-            await supervisor.done_starting(unit)
+            await supervisor.supervise_until_done_starting(unit)
         logger.info("Duration: %ss", time.perf_counter() - start_time)
         return supervisor
 
