@@ -58,7 +58,7 @@ class MCClient(AbstractAsyncContextManager):
             logger.debug("Sending handshake packet to %s:%s", self.hostname, self.port)
             packet_writer.write_handshake_packet(self.version.protocol, self.hostname, self.port)
             packet_writer.write_request_packet()
-            packet_writer.write_pingpong_packet(packet_writer.random_ping_payload())
+            packet_writer.write_pingpong_packet(packet_writer.random_long())
             await self.writer.drain()
 
             _, status_response = await packet_reader.read_json_packet()

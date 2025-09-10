@@ -17,6 +17,7 @@ class PacketType(enum.IntEnum):
     HANDSHAKE = 0
     REQUEST = 0
     PINGPONG = 1
+    KEEPALIVE = 31
 
 type Packet[T: Buffer] = tuple[int, tuple[int, T]]
 
@@ -188,6 +189,19 @@ class PacketReader:
         except (MCProtocolError, struct.error) as err:
             raise MCProtocolError(packet, f"Malformed ping/pong packet: {err}") from err
 
+    @staticmethod
+    def decode_keepalive_packet(packet: Packet[Buffer]) -> tuple[int, int]:
+        try:
+            n, (packet_id, packet_data) = packet
+            if packet_id != PacketType.KEEPALIVE:
+                raise MCProtocolError(packet, f"Expected packet id {PacketType.KEEPALIVE} but got {packet_id}")
+            if len(packet_data) != 8:
+                raise MCProtocolError(packet, f"Expected 8 bytes of payload but received {len(packet_data)}")
+            keepalive_id = struct.unpack(">q", packet_data)[0]
+            return n, keepalive_id
+        except (MCProtocolError, struct.error) as err:
+            raise MCProtocolError(packet, f"Malformed keepalive packet: {err}") from err
+
     ############################################################################################################
 
     @staticmethod
@@ -348,6 +362,9 @@ class PacketReader:
     async def read_pingpong_packet(self, timeout: int | None=None) -> int:
         return self.decode_pingpong_packet(await self.read_packet(timeout=timeout or self.timeout))[1]
 
+    async def read_keepalive_packet(self, timeout: int | None=None) -> int:
+        return self.decode_keepalive_packet(await self.read_packet(timeout=timeout or self.timeout))[1]
+
     @asynccontextmanager
     async def save(self):
         try:
@@ -360,7 +377,14 @@ class PacketReader:
 
 class PacketWriter:
     @staticmethod
-    def random_ping_payload():
+    def random_long():
+        """Generate a random Long.
+
+        Can be used for a ping or keepalive packet.
+
+        Returns:
+            int: Random Long.
+        """
         return struct.unpack(">q", random.randbytes(8))[0]
 
     ############################################# Encode functions #############################################
@@ -427,6 +451,10 @@ class PacketWriter:
     def encode_pingpong_packet(cls, payload: int) -> bytes:
         return cls.encode_packet(1, struct.pack(">q", payload))
 
+    @classmethod
+    def encode_keepalive_packet(cls, keepalive_id: int) -> bytes:
+        return cls.encode_packet(31, struct.pack(">q", keepalive_id))
+
     ############################################################################################################
 
     def __init__(self, writer: asyncio.StreamWriter, timeout: int | None=None):
@@ -450,6 +478,9 @@ class PacketWriter:
 
     def write_pingpong_packet(self, payload: int):
         self.writer.write(self.encode_pingpong_packet(payload))
+
+    def write_keepalive_packet(self, keepalive_id: int):
+        self.writer.write(self.encode_keepalive_packet(keepalive_id))
 
     async def drain(self, timeout: int | None=None):
         await asyncio.wait_for(self.writer.drain(), timeout or self.timeout)
