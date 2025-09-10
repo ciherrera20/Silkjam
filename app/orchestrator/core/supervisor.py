@@ -155,6 +155,7 @@ class Supervisor(BaseAsyncContextManager):
         self.log.debug("Running %s", unit)
         state = self._units[unit]
         state.result = None
+        state.done_entering.clear()
         state.done_exiting.clear()
 
         try:  # Enter unit
@@ -202,6 +203,7 @@ class Supervisor(BaseAsyncContextManager):
             else:  # Unit finished successfully
                 self.log.debug("Finished running %s", unit)
         finally:  # Unit finished running or failed
+            state.done_entering.set()
             try:  # Exit unit
                 state.pending_start = False
                 state.status = Status.EXITING
@@ -220,9 +222,9 @@ class Supervisor(BaseAsyncContextManager):
                 state.result = err
             else:  # Unit exited successfully
                 self.log.debug("Finished exiting %s", unit)
-                state.done_exiting.set()
 
             # Cleanup state
+            state.done_exiting.set()
             state.status = Status.STOPPED if state.pending_stop else Status.READY
             state.pending_stop = state.force_pending_stop = False
             if not self._lock.locked():
@@ -308,7 +310,7 @@ class Supervisor(BaseAsyncContextManager):
         ) -> tuple[
             tuple[
                 set[asyncio.Event],
-                dict[AsyncContextManager, None | Exception]],
+                dict[AsyncContextManager, None | BaseException]],
             tuple[
                 set[asyncio.Event],
                 set[AsyncContextManager]
@@ -335,7 +337,7 @@ class Supervisor(BaseAsyncContextManager):
                 tuple[
                     tuple[
                         set[asyncio.Event],
-                        dict[AsyncContextManager, None | Exception]
+                        dict[AsyncContextManager, None | BaseException]
                     ],
                     tuple[
                         set[asyncio.Event],
@@ -512,7 +514,7 @@ class Supervisor(BaseAsyncContextManager):
         elif state.status == Status.EXITING:
             return False
 
-    async def done_starting(
+    async def supervise_until_done_starting(
             self,
             unit: AsyncContextManager
         ) -> bool:
@@ -536,10 +538,43 @@ class Supervisor(BaseAsyncContextManager):
         elif state.pending_start or state.status == Status.ENTERING:
             while True:
                 (done_events, done_units), (_, _) = await self.supervise_until([state.done_entering])
-                if state.done_entering in done_events:
-                    return True
-                if unit in done_units:
+                if unit in done_units and isinstance(done_units[unit], BaseException):
                     return False
+                elif state.done_entering in done_events:
+                    return True
+        else:
+            return False
+
+    async def done_starting(
+        self,
+        unit: AsyncContextManager
+    ) -> bool:
+        """Wait for a unit to finish starting without running other units.
+
+        Meant to be called by tasks running parallel to supervise_until, which
+        cannot be run in more than one task at a time.
+
+        Args:
+            unit (AsyncContextManager): Unit to wait for.
+
+        Returns:
+            bool: True if the unit finished starting successfully or was
+                already started and is currently running. False if the unit
+                has not been added, does not have a start scheduled and is not
+                currently starting, or errored out while starting.
+        """
+        if unit not in self._units:
+            return False
+
+        state = self._units[unit]
+        if state.status == Status.RUNNING:
+            return True
+        elif state.pending_start or state.status == Status.ENTERING:
+            await state.done_entering.wait()
+            if isinstance(state.result, BaseException):
+                return False
+            else:
+                return True
         else:
             return False
 
@@ -562,7 +597,7 @@ class Supervisor(BaseAsyncContextManager):
         """
         if not self.start_unit_nowait(unit):
             return False
-        return await self.done_starting(unit)
+        return await self.supervise_until_done_starting(unit)
 
     def stop_unit_nowait(
             self,
@@ -610,7 +645,7 @@ class Supervisor(BaseAsyncContextManager):
             state.pending_stop = True
             return True
 
-    async def done_stopping(
+    async def supervise_until_done_stopping(
             self,
             unit: AsyncContextManager
         ) -> bool:
@@ -634,10 +669,43 @@ class Supervisor(BaseAsyncContextManager):
         elif state.pending_stop or state.status == Status.EXITING:
             while True:
                 (done_events, done_units), (_, _) = await self.supervise_until([state.done_exiting])
-                if state.done_exiting in done_events:
-                    return True
-                if unit in done_units:
+                if unit in done_units and isinstance(done_units[unit], BaseException):
                     return False
+                elif state.done_exiting in done_events:
+                    return True
+        else:
+            return False
+
+    async def done_stopping(
+            self,
+            unit: AsyncContextManager
+        ) -> bool:
+        """Wait for a unit to finish stopping without running other units.
+
+        Meant to be called by tasks running parallel to supervise_until, which
+        cannot be run in more than one task at a time.
+
+        Args:
+            unit (AsyncContextManager): Unit to wait for.
+
+        Returns:
+            bool: True if the unit finished stopping successfully or was
+                already stopped. False if the unit has not been added, does
+                not have a stop scheduled and is not currently stopped, or
+                errored out while stopping.
+        """
+        if unit not in self._units:
+            return False
+
+        state = self._units[unit]
+        if state.status == Status.STOPPED:
+            return True
+        elif state.pending_stop or state.status == Status.EXITING:
+            await state.done_exiting.wait()
+            if isinstance(state.result, BaseException):
+                return False
+            else:
+                return True
         else:
             return False
 
@@ -666,7 +734,7 @@ class Supervisor(BaseAsyncContextManager):
         """
         if not self.stop_unit_nowait(unit, force=force):
             return False
-        return await self.done_stopping(unit)
+        return await self.supervise_until_done_stopping(unit)
 
     def status(
             self,
@@ -787,7 +855,7 @@ class Supervisor(BaseAsyncContextManager):
     ) -> tuple[
         tuple[
             set[asyncio.Event],
-            dict[AsyncContextManager, None | Exception]],
+            dict[AsyncContextManager, None | BaseException]],
         tuple[
             set[asyncio.Event],
             set[AsyncContextManager]
@@ -817,7 +885,7 @@ class Supervisor(BaseAsyncContextManager):
             tuple[
                 tuple[
                     set[asyncio.Event],
-                    dict[AsyncContextManager, None | Exception]
+                    dict[AsyncContextManager, None | BaseException]
                 ],
                 tuple[
                     set[asyncio.Event],
