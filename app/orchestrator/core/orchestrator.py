@@ -121,7 +121,7 @@ class MCOrchestrator(Supervisor):
                 elif not listing.enabled:
                     self.log.info("Skipping disabled server listing entry %s", name)
                 else:
-                    backend = MCBackend(self.root / name, self.acquire_port, listing)
+                    backend = MCBackend(self.root / "servers" / name, self.acquire_port, listing)
                     backend.on_listing_change(self.update_config)
                     self.backends[name] = backend
                     self.add_unit(backend, backend.serve_forever)
