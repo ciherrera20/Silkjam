@@ -1,6 +1,9 @@
+import re
 import json
 from pathlib import Path
 from pydantic import BaseModel, Field, PrivateAttr, model_validator, computed_field
+
+SUBDOMAIN_REGEX: re.Pattern = re.compile(r"(?:(?!-)[a-zA-Z0-9\-]+\.)*?(?!-)[a-zA-Z0-9\-]+")
 
 class ProxyListing(BaseModel):
     name: str
@@ -67,6 +70,8 @@ class Config(BaseModel):
             if listing.port in proxy_ports:
                 listing.errors.append(f"Proxy port \"{listing.port}\" is already taken")
             for subdomain, server_name in listing.subdomains.items():
+                if subdomain != "" and not SUBDOMAIN_REGEX.fullmatch(subdomain):
+                    listing.errors.append(f"Proxy subdomain \"{subdomain}\" is invalid")
                 if server_name not in server_names:
                     listing.errors.append(f"Proxy subdomain \"{subdomain}\" routes to non-existent server \"{server_name}\"")
             if listing.valid:

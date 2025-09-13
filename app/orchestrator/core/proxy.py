@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import logging
 from contextlib import suppress
@@ -15,12 +16,13 @@ from .protocol import (
     MCProtocolError
 )
 from utils.logger_adapters import PrefixLoggerAdapter
-from models.config import ProxyListing
+from models.config import ProxyListing, SUBDOMAIN_REGEX
 
 logger = logging.getLogger(__name__)
 
-HOSTNAME = os.environ["HOSTNAME"]
-HOLD_TIMEOUT = 25
+HOSTNAME: str = os.environ["HOSTNAME"]
+HOSTNAME_REGEX: re.Pattern = re.compile(rf"^(?:({SUBDOMAIN_REGEX.pattern})\.)?{re.escape(HOSTNAME)}$")
+HOLD_TIMEOUT: int = 25
 
 class MCProxy(BaseAsyncContextManager):
     def __init__(
@@ -70,9 +72,9 @@ class MCProxy(BaseAsyncContextManager):
                 is_legacy_ping = True
                 conn_logger.debug("Received legacy ping: %s", handshake)
                 server_address = handshake["hostname"]
-                if server_address[-len(HOSTNAME):] == HOSTNAME:
-                    subdomain = server_address.split(HOSTNAME)[0][:-1]
-                    conn_logger.debug("Identified subdomain: %s", subdomain)
+                if m := HOSTNAME_REGEX.match(server_address):
+                    subdomain = m.group(1) or ""
+                    conn_logger.debug("Identified subdomain: \"%s\"", subdomain)
                     if subdomain in self.listing.subdomains:
                         # Backend identified with legacy ping
                         server_name = self.listing.subdomains[subdomain]
@@ -81,7 +83,7 @@ class MCProxy(BaseAsyncContextManager):
                     else:
                         conn_logger.debug("No server found at %s", server_address)
                 else:
-                    conn_logger.debug("Could not find hostname %s in server address %s", HOSTNAME, server_address)
+                    conn_logger.debug("Invalid server address %s", server_address)
             except MCProtocolError as err:
                 # Handle modern handshake
                 try:
@@ -90,18 +92,18 @@ class MCProxy(BaseAsyncContextManager):
                     is_legacy_ping = False
                     conn_logger.debug("Received handshake: %s", handshake)
                     server_address = handshake["server_address"]
-                    if server_address[-len(HOSTNAME):] == HOSTNAME:
-                        subdomain = server_address.split(HOSTNAME)[0][:-1]
-                        conn_logger.debug("Identified subdomain: %s", subdomain)
+                    if m := HOSTNAME_REGEX.match(server_address):
+                        subdomain = m.group(1) or ""
+                        conn_logger.debug("Identified subdomain: \"%s\"", subdomain)
                         if subdomain in self.listing.subdomains:
-                            # Backend identified with modern handshake
+                            # Backend identified with legacy ping
                             server_name = self.listing.subdomains[subdomain]
                             backend = self.backends[server_name]
                             conn_logger.debug("Found server %s at %s", backend.name, server_address)
                         else:
                             conn_logger.debug("No server found at %s", server_address)
                     else:
-                        conn_logger.debug("Could not find hostname %s in server address %s", HOSTNAME, server_address)
+                        conn_logger.debug("Invalid server address %s", server_address)
                 except MCProtocolError as err:
                     conn_logger.debug("Error during handshake: %s", err)
                 except ConnectionResetError:
