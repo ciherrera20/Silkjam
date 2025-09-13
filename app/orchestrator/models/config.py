@@ -6,6 +6,7 @@ class ProxyListing(BaseModel):
     name: str
     port: int
     enabled: bool
+    subdomains: dict[str, str]
 
     # Annotate listing as valid or not
     _errors: list[str] = PrivateAttr(default_factory=list)
@@ -31,9 +32,7 @@ UNKNOWN_VERSION = Version(name="unknown", protocol=0)
 
 class ServerListing(BaseModel):
     name: str
-    subdomain: str
     version: Version = UNKNOWN_VERSION
-    proxy: str | None
     sleep_properties: SleepProperties = SleepProperties()
     enabled: bool
 
@@ -57,25 +56,22 @@ class Config(BaseModel):
         proxy_names = set()
         proxy_ports = set()
         server_names = set()
-        server_subdomains = set()
+        for listing in self.server_listing:
+            if listing.name in server_names:
+                listing.errors.append(f"Server name \"{listing.name}\" is already taken")
+            if listing.valid:
+                server_names.add(listing.name)
         for listing in self.proxy_listing:
             if listing.name in proxy_names:
                 listing.errors.append(f"Proxy name \"{listing.name}\" is already taken")
             if listing.port in proxy_ports:
                 listing.errors.append(f"Proxy port \"{listing.port}\" is already taken")
+            for subdomain, server_name in listing.subdomains.items():
+                if server_name not in server_names:
+                    listing.errors.append(f"Proxy subdomain \"{subdomain}\" routes to non-existent server \"{server_name}\"")
             if listing.valid:
                 proxy_names.add(listing.name)
                 proxy_ports.add(listing.port)
-        for listing in self.server_listing:
-            if listing.name in server_names:
-                listing.errors.append(f"Server name \"{listing.name}\" is already taken")
-            if listing.subdomain in server_names:
-                listing.errors.append(f"Server subdomain \"{listing.subdomain}\" is already taken")
-            if listing.proxy not in proxy_names:
-                listing.errors.append(f"Server proxy \"{listing.proxy}\" does not exist")
-            if listing.valid:
-                server_names.add(listing.name)
-                server_subdomains.add(listing.subdomain)
         return self
 
     @classmethod
@@ -84,7 +80,8 @@ class Config(BaseModel):
             proxy_listing=[ProxyListing(
                 name="proxy1",
                 port=25565,
-                enabled=True
+                enabled=True,
+                subdomains={}
             )],
             server_listing=[]
         )

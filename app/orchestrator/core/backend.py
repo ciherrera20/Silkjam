@@ -55,10 +55,6 @@ class MCBackend(Supervisor):
         return self.listing.name
 
     @property
-    def subdomain(self):
-        return self.listing.subdomain
-
-    @property
     def version(self):
         return self.listing.version
 

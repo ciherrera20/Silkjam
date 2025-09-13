@@ -94,7 +94,7 @@ class MCOrchestrator(Supervisor):
                 elif not listing.enabled:
                     self.log.info("Skipping disabled proxy listing entry %s", name)
                 else:
-                    proxy = MCProxy(listing)
+                    proxy = MCProxy(self.backends, listing)
                     self.proxies[name] = proxy
                     self.add_unit(proxy, proxy.serve_forever)
 
@@ -134,13 +134,6 @@ class MCOrchestrator(Supervisor):
                 removed_backend_names.add(name)
         for name in removed_backend_names:
             del self.backends[name]
-
-        # Update all proxy backends
-        proxy_backends = defaultdict(list)
-        for listing in self.config.server_listing:
-            proxy_backends[listing.proxy].append(self.backends[listing.name])
-        for name, proxy in self.proxies.items():
-            proxy.backends = proxy_backends[name]
 
     async def run_servers(self):
         while True:

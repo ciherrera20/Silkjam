@@ -25,25 +25,23 @@ HOLD_TIMEOUT = 25
 class MCProxy(BaseAsyncContextManager):
     def __init__(
             self,
+            backends: dict[str, MCBackend],
             listing: ProxyListing
         ):
         super().__init__()
-        self.name = listing.name
-        self.port = listing.port
+        self.listing = listing
+        self.backends = backends
         self.proxy_server: asyncio.Server
-        self._backends = []
-        self.subdomain_map = {}
 
         self.log = PrefixLoggerAdapter(logger, self.name)
 
     @property
-    def backends(self) -> list[MCBackend]:
-        return self._backends
+    def name(self):
+        return self.listing.name
 
-    @backends.setter
-    def backends(self, new_backends: list[MCBackend]):
-        self._backends = new_backends
-        self.subdomain_map = {server.subdomain: server for server in self._backends}  # Subdomain -> server
+    @property
+    def port(self):
+        return self.listing.port
 
     async def _start(self):
         self.log.debug("Starting proxy server on port %s", self.port)
@@ -75,9 +73,10 @@ class MCProxy(BaseAsyncContextManager):
                 if server_address[-len(HOSTNAME):] == HOSTNAME:
                     subdomain = server_address.split(HOSTNAME)[0][:-1]
                     conn_logger.debug("Identified subdomain: %s", subdomain)
-                    if subdomain in self.subdomain_map:
+                    if subdomain in self.listing.subdomains:
                         # Backend identified with legacy ping
-                        backend = self.subdomain_map[subdomain]
+                        server_name = self.listing.subdomains[subdomain]
+                        backend = self.backends[server_name]
                         conn_logger.debug("Found server %s at %s", backend.name, server_address)
                     else:
                         conn_logger.debug("No server found at %s", server_address)
@@ -94,9 +93,10 @@ class MCProxy(BaseAsyncContextManager):
                     if server_address[-len(HOSTNAME):] == HOSTNAME:
                         subdomain = server_address.split(HOSTNAME)[0][:-1]
                         conn_logger.debug("Identified subdomain: %s", subdomain)
-                        if subdomain in self.subdomain_map:
+                        if subdomain in self.listing.subdomains:
                             # Backend identified with modern handshake
-                            backend = self.subdomain_map[subdomain]
+                            server_name = self.listing.subdomains[subdomain]
+                            backend = self.backends[server_name]
                             conn_logger.debug("Found server %s at %s", backend.name, server_address)
                         else:
                             conn_logger.debug("No server found at %s", server_address)
