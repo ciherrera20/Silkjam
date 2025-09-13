@@ -211,9 +211,12 @@ class MCProc(BaseAsyncContextManager):
             tasks = [
                 asyncio.create_task(self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL)),
                 asyncio.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL)),
-                asyncio.create_task(self.request_status_continuously())
             ]
+            ping_task = asyncio.create_task(self.request_status_continuously())
             await asyncio.gather(*tasks)
+            ping_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await ping_task
             self.log.debug("Server process (pid %s) stopped communication", self.server_proc.pid)
         except asyncio.CancelledError:
             self.log.debug("Backend monitor task canceled")
