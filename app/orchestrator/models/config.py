@@ -1,4 +1,5 @@
 import re
+import enum
 import json
 from pathlib import Path
 from pydantic import BaseModel, Field, PrivateAttr, model_validator, computed_field
@@ -27,6 +28,18 @@ class SleepProperties(BaseModel):
     motd: str | None = None
     waking_kick_msg: str = Field(default="§eServer is waking up, try again soon...", alias="waking-kick-msg")
 
+class BackupStrategy(str, enum.Enum):
+    EXPONENTIAL = "exponential"
+    FIXED = "fixed"
+
+    def __str__(self):
+        return self.value
+
+class BackupProperties(BaseModel):
+    interval: int
+    max_backups: int
+    strategy: BackupStrategy = BackupStrategy.EXPONENTIAL
+
 class Version(BaseModel):
     name: str
     protocol: int
@@ -37,6 +50,7 @@ class ServerListing(BaseModel):
     name: str
     version: Version = UNKNOWN_VERSION
     sleep_properties: SleepProperties = SleepProperties()
+    backup_properties: BackupProperties | None = BackupProperties(interval=60, max_backups=1, strategy=BackupStrategy.EXPONENTIAL)
     enabled: bool
 
     # Annotate listing as valid or not

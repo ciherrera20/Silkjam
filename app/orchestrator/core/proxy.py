@@ -277,7 +277,7 @@ class MCProxy(BaseAsyncContextManager):
                                 await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
                             else:
                                 # Respond to client logging in if server failed to start
-                                conn_logger.debug("Backend server failed to start")
+                                conn_logger.debug("Backend server failed to start on time, sending waking kick msg")
                                 await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)        
                         else:
                             # Respond to client not logging in while server is sleeping

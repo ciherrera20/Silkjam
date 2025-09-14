@@ -1,24 +1,31 @@
 import re
+import nbtlib
 import signal
 import asyncio
 import logging
 from pathlib import Path
+from datetime import datetime
 from contextlib import suppress, AbstractContextManager, AsyncExitStack
 
 #
 # Project imports
 #
 from .baseacm import BaseAsyncContextManager
-# from .client import MCClient
-from mctools import AsyncPINGClient
+from mctools import AsyncPINGClient, AsyncRCONClient
 from utils.logger_adapters import PrefixLoggerAdapter, BytesLoggerAdapter
+from utils.backups import get_stale_backups
 from models.serverproperties import ServerProperties
+from models.config import BackupProperties
 
 type PortCMFactory = callable[[], AbstractContextManager[int]]
 
 class MCProc(BaseAsyncContextManager):
     STARTING_SERVER_REGEX = re.compile(rb"^.*:(\d{5}).*$")
     DONE_REGEX = re.compile(rb"^.*Done \(.*$")
+
+    DATE_FMT = "%Y-%m-%d_%H:%M:%S"
+    BACKUP_REGEX = re.compile(r".*?(\d+)\.tar\.gz")
+    TICKS_PER_MINUTE = 20 * 60
 
     STDOUT_LOG_LEVEL = logging.DEBUG
     STDERR_LOG_LEVEL = logging.ERROR
@@ -28,6 +35,8 @@ class MCProc(BaseAsyncContextManager):
             root: Path,
             name: str,
             port_factory: PortCMFactory,
+            backup_root: Path,
+            backup_properties: BackupProperties,
             logger: logging.Logger | logging.LoggerAdapter | None=None,
             stop_timeout: int=90,
             sigint_timeout: int=90,
@@ -41,6 +50,9 @@ class MCProc(BaseAsyncContextManager):
         self.name = name
         self.port_factory = port_factory
         self.properties = ServerProperties.load(self.root / "server.properties")
+        self.backup_root = backup_root
+        self.backup_root.mkdir(parents=True, exist_ok=True)
+        self.backup_properties = backup_properties
         self.stop_timeout = stop_timeout
         self.sigint_timeout = sigint_timeout
         self.sigterm_timeout = sigterm_timeout
@@ -48,6 +60,10 @@ class MCProc(BaseAsyncContextManager):
         self.server_proc: asyncio.Process
 
         self.server_list_ping_cb = None
+
+    @property
+    def tick_interval(self):
+        return self.backup_properties.interval * self.TICKS_PER_MINUTE
 
     async def _start(self):
         await super()._start()
@@ -61,6 +77,7 @@ class MCProc(BaseAsyncContextManager):
         self.properties = ServerProperties.load(self.root / "server.properties")
         self.properties.server_port = server_port
         self.properties.rcon_port = rcon_port
+        self.properties.enable_rcon = True
         self.properties.dump(self.root / "server.properties")
 
         server_jar_file = self.root / "server.jar"
@@ -76,19 +93,26 @@ class MCProc(BaseAsyncContextManager):
         log_stderr_task = asyncio.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))
         wait_until_done_initializing_task = asyncio.create_task(self.wait_until_done_initializing())
 
-        done, pending = await asyncio.wait([wait_until_done_initializing_task, log_stderr_task], return_when=asyncio.FIRST_COMPLETED)
-        if log_stderr_task in done:
-            self.log.error("Server process closed stderr")
-        if wait_until_done_initializing_task in pending:
-            self.log.error("Did not finish initializing server")
-        else:
-            self.log.info("Minecraft server ready to accept players")
+        try:
+            done, pending = await asyncio.wait([wait_until_done_initializing_task, log_stderr_task], return_when=asyncio.FIRST_COMPLETED)
+            if log_stderr_task in done:
+                self.log.error("Server process closed stderr")
+            if wait_until_done_initializing_task in pending:
+                self.log.error("Did not finish initializing server")
+            else:
+                self.log.info("Minecraft server ready to accept players")
 
-        # Cancel remaining task(s)
-        for task in pending:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            # Cancel remaining task(s)
+            for task in pending:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        finally:
+            interrupted = []
+            for task in (wait_until_done_initializing_task, log_stderr_task):
+                if not task.done():
+                    interrupted.append(task)
+            await asyncio.gather(*interrupted, return_exceptions=True)
 
     async def _stop(self, *args):
         log_stdout_task = asyncio.create_task(self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL))
@@ -205,28 +229,86 @@ class MCProc(BaseAsyncContextManager):
                     self.server_list_ping_cb(stats)
                 await asyncio.sleep(interval)
 
+    async def backup_continuously(self):
+        while True:
+            self.log.debug("Checking if backup is needed")
+
+            # Grab current backups from backup directory
+            backups = []
+            for p in self.backup_root.iterdir():
+                if p.is_file():
+                    if m := self.BACKUP_REGEX.fullmatch(p.name):
+                        ts = int(m.group(1))
+                        backups.append((ts, p))
+            backups.sort()
+
+            # Read world time
+            nbtfile = nbtlib.load(self.root / "world" / "level.dat")
+            total_ticks = int(nbtfile.root["Data"]["Time"])
+
+            create_backup = len(backups) == 0 or ((total_ticks - backups[-1][0]) // self.tick_interval) > 0
+            if create_backup:
+                name = f"world_{datetime.now().strftime(self.DATE_FMT)}_{total_ticks}.tar.gz"
+                backup = self.backup_root / name
+                tmp = self.backup_root / (name + ".part")
+
+                self.log.debug("Starting backup %s", backup)
+                stale_backups = get_stale_backups(backups, total_ticks, self.backup_properties.max_backups, self.tick_interval, key=lambda backup: backup[0])
+                for _, p in stale_backups:
+                    self.log.debug("Removing stale backup %s", p)
+                    p.unlink(missing_ok=True)
+
+                try:
+                    async with AsyncRCONClient("0.0.0.0", self.properties.rcon_port) as client:
+                        await client.login(self.properties.rcon_password)
+                        await client.command("save-off")
+                        response = await client.command("save-all")
+                        if "Saved the game" not in response:
+                            raise RuntimeError("Failed to save the game")
+                        proc = await asyncio.create_subprocess_exec(
+                            "tar",
+                            "-czf",
+                            tmp,
+                            "-C",
+                            self.root / "world",
+                            ".",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        stdout, stderr = await proc.communicate()
+                        self.log.debug("Stdout: %s", stdout)
+                        self.log.debug("Stderr: %s", stderr)
+                        tmp.rename(backup)  # atomic "commit"
+                        await client.command("save-on")
+                    self.log.info("Created backup %s", backup)
+                except Exception as err:
+                    self.log.exception("Exception caught while creating backup: %s", err)
+                finally:
+                    if tmp.is_file():
+                        self.log.warning("Failed to creaate backup %s", backup)
+                        tmp.unlink()  # cleanup leftover partials
+                sleep_time = self.backup_properties.interval * 60 + 1  # Convert to seconds
+            else:
+                self.log.debug("No backup needed")
+                sleep_time = (self.tick_interval - (total_ticks - backups[-1][0])) // 20 + 1  # Calculate time until next backup
+
+            # Sleep until next backup check
+            self.log.debug("Next backup check scheduled in %ss", sleep_time)
+            await asyncio.sleep(sleep_time)
+
     async def monitor(self):
         self.log.debug("Starting server process monitor task for pid %s", self.server_proc.pid)
-        try:
-            tasks = [
-                asyncio.create_task(self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL)),
-                asyncio.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL)),
-            ]
-            ping_task = asyncio.create_task(self.request_status_continuously())
-            await asyncio.gather(*tasks)
-            ping_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await ping_task
+        async with asyncio.TaskGroup() as tg:
+            status_task = tg.create_task(self.request_status_continuously())
+            if self.backup_properties is not None:
+                backup_task = tg.create_task(self.backup_continuously())
+            async with asyncio.TaskGroup() as proc_tg:
+                proc_tg.create_task(self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL))
+                proc_tg.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))
             self.log.debug("Server process (pid %s) stopped communication", self.server_proc.pid)
-        except asyncio.CancelledError:
-            self.log.debug("Backend monitor task canceled")
-            raise
-        finally:
-            interrupted = []
-            for task in tasks:
-                if not task.done():
-                    interrupted.append(task)
-            await asyncio.gather(*tasks, return_exceptions=True)
+            status_task.cancel()
+            if self.backup_properties is not None:
+                backup_task.cancel()
 
     def on_server_list_ping(self, cb):
         self.server_list_ping_cb = cb

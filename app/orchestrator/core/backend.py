@@ -20,27 +20,30 @@ class MCBackend(Supervisor):
     def __init__(
             self,
             root: Path,
+            backup_root: Path,
             port_factory: PortCMFactory,
             listing: ServerListing
         ):
         super().__init__()
         self.root = root
+        self.backup_root = backup_root
         self.listing = listing
         self.log = PrefixLoggerAdapter(logger, listing.name)
 
         self.sleep_timer: Timer | None
         self.icon = None
 
-        # Create units to supervise
-        self.mcproc: MCProc = MCProc(self.root, listing.name, port_factory, self.log)
+        # Create minecraft server process unit
+        self.mcproc: MCProc = MCProc(self.root, listing.name, port_factory, self.backup_root, self.listing.backup_properties, self.log)
+        self.mcproc.on_server_list_ping(self.update_stats)
+        self.add_unit(self.mcproc, self.mcproc.monitor, stopped=listing.sleep_properties.timeout is not None and listing.version != UNKNOWN_VERSION)
+
+        # Create sleep timer unit to stop server process
         if listing.sleep_properties.timeout is None:
             self.sleep_timer = None
-            self.add_unit(self.mcproc, self.mcproc.monitor, restart=True, stopped=False)
         else:
             self.sleep_timer = Timer(listing.sleep_properties.timeout)
-            self.add_unit(self.mcproc, self.mcproc.monitor, restart=True, stopped=(listing.version != UNKNOWN_VERSION))
             self.add_unit(self.sleep_timer, self.sleep_timer.wait, restart=False, stopped=True)
-        self.mcproc.on_server_list_ping(self.update_stats)
 
         self._online_players = 0  # Keep track of number of players connected to server
         self._start_mcproc = asyncio.Event()

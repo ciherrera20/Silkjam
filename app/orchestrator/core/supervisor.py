@@ -508,6 +508,7 @@ class Supervisor(BaseAsyncContextManager):
             if not state.pending_start:
                 self._command_queue.put_nowait((self.Command.START, unit))
                 state.pending_start = True
+            state.status = Status.READY
             return True
         elif state.status in {Status.ENTERING, Status.RUNNING}:
             return True
