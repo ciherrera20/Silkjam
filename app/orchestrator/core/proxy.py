@@ -78,8 +78,11 @@ class MCProxy(BaseAsyncContextManager):
                     if subdomain in self.listing.subdomains:
                         # Backend identified with legacy ping
                         server_name = self.listing.subdomains[subdomain]
-                        backend = self.backends[server_name]
-                        conn_logger.debug("Found server %s at %s", backend.name, server_address)
+                        if self.listing.subdomains[subdomain] in self.backends:
+                            backend = self.backends[server_name]
+                            conn_logger.debug("Found server %s at %s", backend.name, server_address)
+                        else:
+                            conn_logger.debug("Backend not found at %s", server_address)
                     else:
                         conn_logger.debug("No server found at %s", server_address)
                 else:
@@ -98,8 +101,11 @@ class MCProxy(BaseAsyncContextManager):
                         if subdomain in self.listing.subdomains:
                             # Backend identified with legacy ping
                             server_name = self.listing.subdomains[subdomain]
-                            backend = self.backends[server_name]
-                            conn_logger.debug("Found server %s at %s", backend.name, server_address)
+                            if self.listing.subdomains[subdomain] in self.backends:
+                                backend = self.backends[server_name]
+                                conn_logger.debug("Found server %s at %s", backend.name, server_address)
+                            else:
+                                conn_logger.debug("Backend not found at %s", server_address)
                         else:
                             conn_logger.debug("No server found at %s", server_address)
                     else:
