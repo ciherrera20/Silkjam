@@ -53,6 +53,7 @@ def get_stale_backups(backups, t, n, d=1, base=2, key=lambda x: x):
             ts = key(backup)
             if ts <= cutoff:
                 stale_backups.add(backup)
+                idx += 1
             else:
                 break
         else:
@@ -79,7 +80,3 @@ def get_stale_backups(backups, t, n, d=1, base=2, key=lambda x: x):
             idx -= 1
         else:
             return stale_backups
-
-def update_backups(backups, t, n, d=1, base=2, key=lambda x: x):
-    stale_backups = get_stale_backups(backups, t, n, d, base, key)
-    return [backup for i, backup in enumerate(backups) if i not in stale_backups] + [t]
