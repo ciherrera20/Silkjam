@@ -82,7 +82,7 @@ class MCProxy(BaseAsyncContextManager):
                             backend = self.backends[server_name]
                             conn_logger.debug("Found server %s at %s", backend.name, server_address)
                         else:
-                            conn_logger.debug("Backend not found at %s", server_address)
+                            conn_logger.debug("Backend %s not found, could be disabled or invalid", server_name)
                     else:
                         conn_logger.debug("No server found at %s", server_address)
                 else:
@@ -105,7 +105,7 @@ class MCProxy(BaseAsyncContextManager):
                                 backend = self.backends[server_name]
                                 conn_logger.debug("Found server %s at %s", backend.name, server_address)
                             else:
-                                conn_logger.debug("Backend not found at %s", server_address)
+                                conn_logger.debug("Backend %s not found, could be disabled or invalid", server_name)
                         else:
                             conn_logger.debug("No server found at %s", server_address)
                     else:
