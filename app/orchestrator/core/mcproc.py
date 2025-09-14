@@ -287,10 +287,10 @@ class MCProc(BaseAsyncContextManager):
                     if tmp.is_file():
                         self.log.warning("Failed to creaate backup %s", backup)
                         tmp.unlink()  # cleanup leftover partials
-                sleep_time = self.backup_properties.interval * 60 + 1  # Convert to seconds
+                sleep_time = self.backup_properties.interval * 60  # Convert to seconds
             else:
                 self.log.debug("No backup needed")
-                sleep_time = (self.tick_interval - (total_ticks - backups[-1][0])) // 20 + 1  # Calculate time until next backup
+                sleep_time = (self.tick_interval - (total_ticks - backups[-1][0])) // 20  # Calculate time until next backup
 
             # Sleep until next backup check
             self.log.debug("Next backup check scheduled in %ss", sleep_time)
