@@ -40,8 +40,7 @@ def get_stale_backups(backups, t, n, d=1, base=2, key=lambda x: x):
     backups = sorted(backups, key=key)  # Sort oldest to newest
 
     # Determine the cutoff for backups and the number of backups to delete
-    cutoff = to_nearest(t - (base ** n) * d, d)
-    # num_to_delete = max(0, len(backups) - n + 1)
+    cutoff = to_nearest(t - ((base ** n) - 1) * d, d)
     num_stale = max(0, len(backups) - n + 1)
     stale_backups = set()
 
@@ -51,7 +50,7 @@ def get_stale_backups(backups, t, n, d=1, base=2, key=lambda x: x):
         if len(stale_backups) < num_stale:
             backup = backups[idx]
             ts = key(backup)
-            if ts <= cutoff:
+            if ts < cutoff:
                 stale_backups.add(backup)
                 idx += 1
             else:
@@ -62,7 +61,7 @@ def get_stale_backups(backups, t, n, d=1, base=2, key=lambda x: x):
     # Then, go through each bin from newest to oldest and delete backups newest to oldest
     counts = [1] + [0] * (n - 1)
     for ts in map(key, backups):
-        if ts > cutoff:
+        if ts >= cutoff:
             i = to_nearest(t - ts, d) // d
             j = math.floor(math.log(i, 2))
             counts[j] += 1
@@ -74,7 +73,7 @@ def get_stale_backups(backups, t, n, d=1, base=2, key=lambda x: x):
             ts = key(backup)
             i = to_nearest(t - ts, d) // d
             j = math.floor(math.log(i, 2))
-            if ts > cutoff and counts[j] > 1:
+            if ts >= cutoff and counts[j] > 1:
                 stale_backups.add(backup)
                 counts[j] -= 1
             idx -= 1
