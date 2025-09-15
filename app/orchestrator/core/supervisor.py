@@ -353,11 +353,14 @@ class Supervisor(BaseAsyncContextManager):
             pending_events = set(event for event in events)
             pending_units = set(unit for unit in self._running_unit_tasks.values())
 
-            # Set up initial tasks
-            monitor_command_queue_task = asyncio.create_task(self._command_queue.get())
-            pending_event_tasks = {asyncio.create_task(event.wait()): event for event in pending_events}  # task -> event
+            # Use task group to handle cancellations cleanly
+            async with asyncio.TaskGroup() as tg:
 
-            try:
+                # Set up initial tasks
+                monitor_command_queue_task = tg.create_task(self._command_queue.get())
+                pending_event_tasks = {tg.create_task(event.wait()): event for event in pending_events}  # task -> event
+
+                # Main supervise loop
                 ret = False
                 while not ret:
                     # Start/restart any READY units
@@ -370,10 +373,12 @@ class Supervisor(BaseAsyncContextManager):
                     async with self._lock:
                         done, pending = await asyncio.wait([monitor_command_queue_task, *pending_event_tasks, *self._running_unit_tasks], return_when=asyncio.FIRST_COMPLETED)
 
+                    # Handle any commands received
                     if monitor_command_queue_task in done:
                         self._handle_command_queue(monitor_command_queue_task.result())
-                        monitor_command_queue_task = asyncio.create_task(self._command_queue.get())
+                        monitor_command_queue_task = tg.create_task(self._command_queue.get())
 
+                    # Handle done events and units
                     for t in done:
                         if t in pending_event_tasks:
                             event = pending_event_tasks[t]
@@ -390,12 +395,14 @@ class Supervisor(BaseAsyncContextManager):
                                 state.task = None
                             del self._running_unit_tasks[t]
 
+                    # Handle pending events and units
                     for t in pending:
                         if t in pending_event_tasks:
                             pending_events.add(pending_event_tasks[t])
                         elif t in self._running_unit_tasks:
                             pending_units.add(self._running_unit_tasks[t])
 
+                    # Add any new running unit tasks
                     for unit in self._running_unit_tasks.values():
                         pending_units.add(unit)
 
@@ -412,15 +419,13 @@ class Supervisor(BaseAsyncContextManager):
                         ret = len(pending_units) == 0
                     elif return_when == Supervisor.ALL_EVENTS_AND_UNITS:
                         ret = len(pending_events) == 0 and len(pending_units) == 0
-            finally:
-                if not monitor_command_queue_task.done():
-                    monitor_command_queue_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await monitor_command_queue_task
+
+                # Cancel remaining tasks
+                monitor_command_queue_task.cancel()
                 for t in pending_event_tasks:
                     t.cancel()
-                await asyncio.gather(*pending_event_tasks, return_exceptions=True)
 
+            # Return information about done and pending events and units
             self.log.debug("supervise_until return condition met: %s", return_when)
             return (done_events, done_units), (pending_events, pending_units)
 
