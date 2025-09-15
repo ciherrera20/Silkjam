@@ -90,29 +90,18 @@ class MCProc(BaseAsyncContextManager):
         )
         self.log.info("Starting minecraft server process with pid %s", self.server_proc.pid)
 
-        log_stderr_task = asyncio.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))
-        wait_until_done_initializing_task = asyncio.create_task(self.wait_until_done_initializing())
-
-        try:
+        async with asyncio.TaskGroup() as tg:
+            log_stderr_task = tg.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))
+            wait_until_done_initializing_task = tg.create_task(self.wait_until_done_initializing())
             done, pending = await asyncio.wait([wait_until_done_initializing_task, log_stderr_task], return_when=asyncio.FIRST_COMPLETED)
             if log_stderr_task in done:
-                self.log.error("Server process closed stderr")
+                self.log.error("Server process closed stderr while starting")
             if wait_until_done_initializing_task in pending:
                 self.log.error("Did not finish initializing server")
             else:
                 self.log.info("Minecraft server ready to accept players")
-
-            # Cancel remaining task(s)
             for task in pending:
                 task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
-        finally:
-            interrupted = []
-            for task in (wait_until_done_initializing_task, log_stderr_task):
-                if not task.done():
-                    interrupted.append(task)
-            await asyncio.gather(*interrupted, return_exceptions=True)
 
     async def _stop(self, *args):
         log_stdout_task = asyncio.create_task(self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL))
