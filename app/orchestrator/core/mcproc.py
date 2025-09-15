@@ -218,7 +218,7 @@ class MCProc(BaseAsyncContextManager):
                     self.server_list_ping_cb(stats)
                 await asyncio.sleep(interval)
 
-    async def backup_continuously(self):
+    async def backup_continuously(self, min_interval=60, retry_interval=5, max_retries=3):
         while True:
             self.log.debug("Checking if backup is needed")
 
@@ -234,6 +234,11 @@ class MCProc(BaseAsyncContextManager):
             # Read world time
             nbtfile = nbtlib.load(self.root / "world" / "level.dat")
             total_ticks = int(nbtfile.root["Data"]["Time"])
+            self.log.debug("Total ticks is %s", total_ticks)
+            if len(backups) == 0:
+                self.log.debug("No backups found")
+            else:
+                self.log.debug("Ticks since last backup is %s, tick_interval is %s", total_ticks - backups[-1][0], self.tick_interval)
 
             create_backup = len(backups) == 0 or ((total_ticks - backups[-1][0]) // self.tick_interval) > 0
             if create_backup:
@@ -241,32 +246,55 @@ class MCProc(BaseAsyncContextManager):
                 backup = self.backup_root / name
                 tmp = self.backup_root / (name + ".part")
 
-                self.log.debug("Starting backup %s", backup)
-                stale_backups = get_stale_backups(backups, total_ticks, self.backup_properties.max_backups, self.tick_interval, key=lambda backup: backup[0])
-                for _, p in stale_backups:
-                    self.log.debug("Removing stale backup %s", p)
-                    p.unlink(missing_ok=True)
-
+                self.log.debug("Starting backup %s", backup.name)
                 try:
+                    tmp.touch(exist_ok=True)
                     async with AsyncRCONClient("0.0.0.0", self.properties.rcon_port) as client:
                         await client.login(self.properties.rcon_password)
+                        await client.command("say Backing up world")
                         await client.command("save-off")
                         response = await client.command("save-all")
                         if "Saved the game" not in response:
-                            raise RuntimeError("Failed to save the game")
-                        proc = await asyncio.create_subprocess_exec(
-                            "tar",
-                            "-czf",
-                            tmp,
-                            "-C",
-                            self.root / "world",
-                            ".",
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        stdout, stderr = await proc.communicate()
-                        self.log.debug("Stdout: %s", stdout)
-                        self.log.debug("Stderr: %s", stderr)
+                            raise RuntimeError("save-all command failed with the following response: %s", response)
+
+                        retry_count = 0
+                        while True:
+                            await asyncio.sleep(retry_interval)
+                            proc = await asyncio.create_subprocess_exec(
+                                "tar",
+                                "-czf",
+                                tmp,
+                                "-C",
+                                self.root / "world",
+                                ".",
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE
+                            )
+                            stdout, stderr = await proc.communicate()
+                            stdout = stdout.decode("utf-8")
+                            stderr = stderr.decode("utf-8")
+
+                            self.log.debug("tar process stdout: %s", stdout)
+                            self.log.debug("tar process stderr: %s", stderr)
+
+                            if proc.returncode != 0:
+                                await client.command("say Backup failed with fatal error")
+                                raise RuntimeError("tar process failed with return code %s and stderr output %s", proc.returncode, stderr.decode("utf-8"))
+
+                            if len(stderr) == 0:
+                                self.log.debug("Backup %s created successfully", backup.name)
+                                await client.command(f"say Backup created successfully")
+                                break
+
+                            if retry_count > max_retries:
+                                await client.command("say Backup failed, max retries exceeded")
+                                raise RuntimeError("Exceeded the maximum number of backup retries: %s", max_retries)
+                            else:
+                                self.log.debug("Retrying backup")
+                                await client.command("say Backup failed with warning, retrying backup")
+                                tmp.unlink(missing_ok=True)
+                                retry_count += 1
+
                         tmp.rename(backup)  # atomic "commit"
                         await client.command("save-on")
                     self.log.info("Created backup %s", backup)
@@ -274,12 +302,19 @@ class MCProc(BaseAsyncContextManager):
                     self.log.exception("Exception caught while creating backup: %s", err)
                 finally:
                     if tmp.is_file():
-                        self.log.warning("Failed to creaate backup %s", backup)
+                        self.log.warning("Failed to create backup %s", backup)
                         tmp.unlink()  # cleanup leftover partials
-                sleep_time = self.backup_properties.interval * 60  # Convert to seconds
+
+                # Remove stale backups
+                stale_backups = get_stale_backups(backups, total_ticks, self.backup_properties.max_backups, self.tick_interval, key=lambda backup: backup[0])
+                for _, p in stale_backups:
+                    self.log.info("Removing stale backup %s", p.name)
+                    p.unlink(missing_ok=True)
+
+                sleep_time = max(min_interval, self.backup_properties.interval * 60)  # Convert to seconds
             else:
                 self.log.debug("No backup needed")
-                sleep_time = (self.tick_interval - (total_ticks - backups[-1][0])) // 20  # Calculate time until next backup
+                sleep_time = max(min_interval, (self.tick_interval - (total_ticks - backups[-1][0])) // 20)  # Calculate time until next backup
 
             # Sleep until next backup check
             self.log.debug("Next backup check scheduled in %ss", sleep_time)
