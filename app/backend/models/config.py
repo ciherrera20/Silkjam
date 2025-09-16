@@ -2,7 +2,7 @@ import re
 import enum
 import json
 from pathlib import Path
-from pydantic import BaseModel, Field, PrivateAttr, model_validator, computed_field
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 SUBDOMAIN_REGEX: re.Pattern = re.compile(r"(?:(?!-)[a-zA-Z0-9\-]+\.)*?(?!-)[a-zA-Z0-9\-]+")
 

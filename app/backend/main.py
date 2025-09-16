@@ -1,8 +1,8 @@
-import asyncio
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import RedirectResponse
-import sys
 import os
+import sys
+import asyncio
+from fastapi import FastAPI, APIRouter, Depends, WebSocket
+from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 import logging
 
@@ -10,6 +10,7 @@ import logging
 # Project imports
 #
 from core.orchestrator import MCOrchestrator
+from models.config import Config
 
 if os.environ.get("DEBUG", "").lower() == "true":
     level = logging.DEBUG
@@ -29,6 +30,7 @@ logger.info("Logging level is %s", level)
 async def lifespan(app: FastAPI):
     # Pseudocode:
     async with MCOrchestrator("/app/data") as orch:
+        app.state.orch = orch
         task = asyncio.create_task(orch.run_servers())
         try:
             yield
@@ -43,18 +45,31 @@ app = FastAPI(
     title="Silkjam",
     description="Smooth Minecraft server setup to play with your friends!",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    root_path="/api"
 )
 
-@app.get("/")
-async def docs_redirect():
-    return RedirectResponse(url="/docs")
+def get_orch():
+    return app.state.orch
 
-@app.websocket("/ws/status/{server_id}")
-async def websocket_status(websocket: WebSocket, server_id: str):
-    await websocket.accept()
-    while True:
-        # Mock status websocket endpoint
-        status = {"server_id": server_id, "status": "running"}
-        await websocket.send_json(status)
-        await asyncio.sleep(5)  # optional throttle
+@app.get("/", tags=["docs"])
+async def docs_redirect():
+    return RedirectResponse(url="/api/docs")
+
+# v1 router
+v1_router = APIRouter(prefix="/v1", tags=["v1"])
+
+@v1_router.get("/config")
+async def get_config(orch: MCOrchestrator = Depends(get_orch)) -> Config:
+    return orch.config.model_dump(by_alias=True)
+
+app.include_router(v1_router)
+
+# @app.websocket("/ws/status/{server_id}")
+# async def websocket_status(websocket: WebSocket, server_id: str):
+#     await websocket.accept()
+#     while True:
+#         # Mock status websocket endpoint
+#         status = {"server_id": server_id, "status": "running"}
+#         await websocket.send_json(status)
+#         await asyncio.sleep(5)  # optional throttle
