@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y \
     xz-utils \
     procps \
     openjdk-21-jre-headless \
+    nginx \
+    supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 # Set JAVA_HOME (useful for Minecraft scripts)
@@ -21,13 +23,27 @@ ENV PATH="$JAVA_HOME/bin:$PATH"
 COPY requirements.txt /
 RUN pip install --no-cache-dir -r /requirements.txt
 
-# Copy in your app
-COPY ./app .
+# Copy backend
+COPY ./app/backend ./backend
 
-# Expose the FastAPI port
+# Copy frontend (index.html)
+COPY ./app/frontend ./frontend
+
+# Copy nginx config
+COPY ./app/nginx.conf /etc/nginx/nginx.conf
+
+# Copy supervisord config
+COPY ./app/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Expose nginx port
+EXPOSE 80
+
+# Expose FastAPI port
 EXPOSE 8000
+
+# Expose minecraft port
 EXPOSE 25565
 
 # Run with Uvicorn
 ENV PYTHONUNBUFFERED=1
-CMD ["uvicorn", "--app-dir", "orchestrator", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/usr/bin/supervisord"]
