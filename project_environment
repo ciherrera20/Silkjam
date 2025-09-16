@@ -15,7 +15,7 @@ install() {
 }
 
 run() {
-    export DATA_VOLUME="$PROJECT_ROOT/app/data"
+    export DATA_VOLUME="$PROJECT_ROOT/data"
     if [ "$1" = "--debug" ]; then
         export DEBUG=true
     else
