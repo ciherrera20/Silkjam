@@ -335,6 +335,7 @@ class MCBackend(Supervisor):
                     self.sleep_timer.timeout = None
                 self._online_player_change.clear()
             if self.sleep_timer in done_units:
+                # TODO: add back check here for online players == 0 by setting status_checker remaining = 0, and allowing supervisor to accumulate done units
                 self.log.info("No players connected for %ss, stopping server", self.listing.sleep_properties.timeout)
                 self.supervisor.stop_unit_nowait(self)
             if self.status_checker in done_units:

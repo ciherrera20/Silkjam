@@ -10,14 +10,14 @@ from mctools import AsyncRCONClient
 #
 # Project imports
 #
-from supervisor import BaseUnit
+from supervisor import Timer
 from utils.logger_adapters import PrefixLoggerAdapter
 from utils.backup_strategies import get_stale_backups
 from models import BackupProperties
 
 type AsyncRCONClientFactory = callable[[], AbstractContextManager[AsyncRCONClient]]
 
-class MCBackupManager(BaseUnit):
+class MCBackupManager(Timer):
     DATE_FMT = "%Y-%m-%d_%H:%M:%S"
     BACKUP_REGEX = re.compile(r".*?(\d+)\.tar\.gz")
     TICKS_PER_SECOND = 20
@@ -28,23 +28,23 @@ class MCBackupManager(BaseUnit):
             self,
             root: Path,
             backup_root: Path,
-            backup_properties: BackupProperties,
+            properties: BackupProperties,
             arcon_client_factory: AsyncRCONClientFactory,
             logger: logging.Logger | logging.LoggerAdapter | None=None,
         ):
-        super().__init__()
         if logger is None:
             logger = logging.getLogger(__name__)
         self.log = PrefixLoggerAdapter(logger, "backup_manager")
         self.root = root
         self.backup_root = backup_root
         self.backup_root.mkdir(parents=True, exist_ok=True)
-        self.backup_properties = backup_properties
+        self.properties = properties
         self.arcon_client_factory = arcon_client_factory
+        super().__init__(max(self.MIN_INTERVAL, self.properties.interval * 60))
 
     @property
     def tick_interval(self):
-        return self.backup_properties.interval * self.TICKS_PER_MINUTE
+        return self.properties.interval * self.TICKS_PER_MINUTE
 
     async def _start(self):
         await super()._start()
@@ -57,7 +57,7 @@ class MCBackupManager(BaseUnit):
         nbtfile = nbtlib.load(self.root / "world" / "level.dat")
         return int(nbtfile.root["Data"]["Time"])
 
-    def load_backups_list(self):
+    def load_backups_list(self) -> list[tuple[int, Path]]:
         # Grab current backups from backup directory
         backups = []
         self.backup_root.mkdir(parents=True, exist_ok=True)
@@ -93,7 +93,12 @@ class MCBackupManager(BaseUnit):
             if prev_autosave_on:
                 await client.command("save-on")
 
-    async def create_backup(self, name, retry_interval=5, max_retries=3):
+    async def create_world_archive(
+            self,
+            name: str,
+            retry_interval: int=5,
+            max_retries: int=3
+        ):
         backup: Path = self.backup_root / name
         tmp: Path = self.backup_root / (name + ".part")
         tmp.touch(exist_ok=True)
@@ -136,9 +141,35 @@ class MCBackupManager(BaseUnit):
                 self.log.warning("Cleaning up partial backup %s", tmp.name)
                 tmp.unlink(missing_ok=True)  # cleanup leftover partials
 
-    def remove_stale_backups(self, backups, total_ticks):
+    async def save_and_backup(self, name: str):
+        self.log.debug("Starting backup %s", name)
+        try:
+            async with self.autosave_off() as client:
+                await client.command("say Backing up world")
+
+                # Save all chunks to disk
+                response = await client.command("save-all")
+                if "Saved the game" not in response:
+                    raise RuntimeError("save-all command failed with the following response: %s", response)
+
+                # Try creating backup
+                try:
+                    await self.create_world_archive(name)
+                except RuntimeError as err:
+                    await client.command("say §4Backup failed")
+                else:
+                    await client.command("say §2Backup succeeded")
+                    self.log.info("Created backup %s", name)
+        except Exception as err:
+            self.log.exception("Exception caught while creating backup: %s", err)
+
+    def remove_stale_backups(
+            self,
+            backups: list[tuple[int, Path]],
+            total_ticks: int
+        ):
         # Remove stale backups
-        stale_backups = get_stale_backups(backups, total_ticks, self.backup_properties.max_backups, self.tick_interval, key=lambda backup: backup[0])
+        stale_backups = get_stale_backups(backups, total_ticks, self.properties.max_backups, self.tick_interval, key=lambda backup: backup[0])
         for _, p in stale_backups:
             self.log.info("Removing stale backup %s", p.name)
             p.unlink(missing_ok=True)
@@ -156,40 +187,23 @@ class MCBackupManager(BaseUnit):
             else:
                 self.log.debug("Ticks since last backup is %s, tick_interval is %s", total_ticks - backups[-1][0], self.tick_interval)
 
-            create_backup = len(backups) == 0 or ((total_ticks - backups[-1][0]) // self.tick_interval) > 0
-            if create_backup:
-                name = f"world_{datetime.now().strftime(self.DATE_FMT)}_{total_ticks}.tar.gz"
-
-                self.log.debug("Starting backup %s", name)
-                try:
-                    async with self.autosave_off() as client:
-                        await client.command("say Backing up world")
-
-                        # Save all chunks to disk
-                        response = await client.command("save-all")
-                        if "Saved the game" not in response:
-                            raise RuntimeError("save-all command failed with the following response: %s", response)
-
-                        # Try creating backup
-                        try:
-                            await self.create_backup(name)
-                        except RuntimeError as err:
-                            await client.command("say §4Backup failed")
-                        else:
-                            await client.command("say §2Backup succeeded")
-                            self.log.info("Created backup %s", name)
-                except Exception as err:
-                    self.log.exception("Exception caught while creating backup: %s", err)
-
-                self.remove_stale_backups(backups, total_ticks)
-                sleep_time = max(self.MIN_INTERVAL, self.backup_properties.interval * 60)  # Convert to seconds
+            if self.properties.max_backups > 0:
+                if len(backups) == 0 or (total_ticks - backups[-1][0]) // self.tick_interval > 0:
+                    self.save_and_backup(f"world_{datetime.now().strftime(self.DATE_FMT)}_{total_ticks}.tar.gz")
+                    self.reset()
+                else:
+                    self.log.debug("No backup needed")
+                    self.remaining = max(self.MIN_INTERVAL, (self.tick_interval - (total_ticks - backups[-1][0])) // 20)  # Calculate time until next backup
             else:
-                self.log.debug("No backup needed")
-                sleep_time = max(self.MIN_INTERVAL, (self.tick_interval - (total_ticks - backups[-1][0])) // 20)  # Calculate time until next backup
+                self.log.debug("Backups disabled")
+                self.timeout = None
+
+            # Remove any stale backups
+            self.remove_stale_backups(backups, total_ticks)
 
             # Sleep until next backup check
-            self.log.debug("Next backup check scheduled in %ss", sleep_time)
-            await asyncio.sleep(sleep_time)
+            self.log.debug("Next backup check scheduled in %ss", self.remaining)
+            await super().run()
 
     def __repr__(self):
         return "MCBackupManager"

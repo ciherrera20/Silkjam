@@ -6,14 +6,14 @@ from mctools import AsyncPINGClient
 #
 # Project imports
 #
-from supervisor import BaseUnit
+from supervisor import Timer
 from utils.logger_adapters import PrefixLoggerAdapter
 
 logger = logging.getLogger(__name__)
 
 type AsyncPINGClientFactory = callable[[], AbstractContextManager[AsyncPINGClient]]
 
-class MCStatusChecker(BaseUnit):
+class MCStatusChecker(Timer):
     MAX_RETRIES = 3
     RETRY_INTERVAL = 10
     INTERVAL = 60
@@ -23,7 +23,7 @@ class MCStatusChecker(BaseUnit):
         aping_client_factory: AsyncPINGClientFactory,
         logger: logging.Logger | logging.LoggerAdapter | None=None,
     ):
-        super().__init__()
+        super().__init__(self.INTERVAL)
         self.log = PrefixLoggerAdapter(logger, "status_checker")
         self.aping_client_factory: AsyncPINGClientFactory = aping_client_factory
         self.server_list_ping_cb = None
@@ -40,6 +40,7 @@ class MCStatusChecker(BaseUnit):
     async def run(self):
         retry_count = 0
         while True:
+            await self.run()
             try:
                 async with self.aping_client_factory() as client:
                     stats = await client.get_stats()
@@ -54,9 +55,9 @@ class MCStatusChecker(BaseUnit):
             else:
                 self.log.debug("Server process responded to status request")
                 retry_count = 0
+                self.reset()
                 if self.server_list_ping_cb is not None:
                     self.server_list_ping_cb(stats)
-                await asyncio.sleep(self.INTERVAL)
 
     def __repr__(self):
         return "MCStatusChecker"
