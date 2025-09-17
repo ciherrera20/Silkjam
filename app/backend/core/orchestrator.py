@@ -10,7 +10,7 @@ from supervisor import Supervisor
 from .backend import MCBackend
 from .proxy import MCProxy
 from utils.logger_adapters import PrefixLoggerAdapter
-from models.config import Config, UNKNOWN_VERSION
+from models import Config, UNKNOWN_VERSION
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
