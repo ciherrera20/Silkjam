@@ -14,30 +14,41 @@ logger.setLevel(logging.WARNING)
 class Timer(BaseUnit):
     def __init__(self, timeout):
         super().__init__()
-        self._timeout = timeout
+        self._timeout: float | None = timeout
+        self._start_time: float | None
+
         self._timeout_changed = asyncio.Event()
-        self._timer_reset = asyncio.Event()
-        self._start_time: float
+        self._remaining_changed = asyncio.Event()
+        # self._timer_reset = asyncio.Event()
 
     @property
-    def timeout(self):
+    def timeout(self) -> float | None:
         return self._timeout
 
     @timeout.setter
-    def timeout(self, value):
+    def timeout(self, value: float | None) -> float | None:
         self._timeout_changed.set()
         self._timeout = value
         return value
 
     @property
-    def remaining(self):
+    def remaining(self) -> float | None:
         if self.timeout is None:
             return None
         else:
-            return max((self._start_time + self.timeout) - time.perf_counter(), 0)
+            return max(self._start_time + self.timeout - time.perf_counter(), 0)
+
+    @remaining.setter
+    def remaining(self, value: float) -> float | None:
+        if self.timeout is not None:
+            self._remaining_changed.set()
+            self._start_time = value - self.timeout + time.perf_counter()
+            return value
+        else:
+            return None
 
     def reset(self):
-        self._timer_reset.set()
+        self.remaining = self.timeout
 
     async def _start(self):
         self._start_time = time.perf_counter()
@@ -53,7 +64,7 @@ class Timer(BaseUnit):
                     asyncio.wait(
                         (
                             asyncio.create_task(self._timeout_changed.wait()),
-                            asyncio.create_task(self._timer_reset.wait())
+                            asyncio.create_task(self._remaining_changed.wait())
                         ),
                         return_when=asyncio.FIRST_COMPLETED
                     ),
@@ -62,10 +73,9 @@ class Timer(BaseUnit):
                 if self._timeout_changed.is_set():
                     logger.debug("Timeout changed to %ss", self.timeout)
                     self._timeout_changed.clear()
-                if self._timer_reset.is_set():
-                    logger.debug("Timer reset")
-                    self._start_time = time.perf_counter()
-                    self._timer_reset.clear()
+                if self._remaining_changed.is_set():
+                    logger.debug("Time remaining changed to %ss", self.remaining)
+                    self._remaining_changed.clear()
         logger.debug("Timer done")
 
     def __repr__(self):
