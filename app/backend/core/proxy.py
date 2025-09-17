@@ -7,7 +7,7 @@ from contextlib import suppress
 #
 # Project imports
 #
-from .baseacm import BaseAsyncContextManager
+from supervisor import BaseUnit
 from .backend import MCBackend
 from .protocol import (
     PacketReader,
@@ -24,7 +24,7 @@ HOSTNAME: str = os.environ["HOSTNAME"]
 HOSTNAME_REGEX: re.Pattern = re.compile(rf"^(?:({SUBDOMAIN_REGEX.pattern})\.)?{re.escape(HOSTNAME)}$")
 HOLD_TIMEOUT: int = 25
 
-class MCProxy(BaseAsyncContextManager):
+class MCProxy(BaseUnit):
     def __init__(
             self,
             backends: dict[str, MCBackend],
@@ -262,37 +262,34 @@ class MCProxy(BaseAsyncContextManager):
             packet_writer = PacketWriter(writer, timeout=30)
             backend, handshake, is_legacy_ping = await self._identify_backend(packet_reader, conn_logger)
             if backend is not None:
-                if backend.started:
-                    if not backend.mcproc_running():
-                        # Start server if a player is trying to join
-                        player_joining = is_legacy_ping or handshake["next_state"] == 2
-                        if player_joining:
-                            # Set server running if it isn't already
-                            if not backend.mcproc_starting():
-                                conn_logger.info("Starting backend server %s", backend.name)
-                                backend.start_mcproc()
+                if not backend.mcproc_running():
+                    # Start server if a player is trying to join
+                    player_joining = is_legacy_ping or handshake["next_state"] == 2
+                    if player_joining:
+                        # Set server running if it isn't already
+                        if not backend.mcproc_starting():
+                            conn_logger.info("Starting backend server %s", backend.name)
+                            backend.start_mcproc()
 
-                            # Keep client connected until server starts (or fails to start)
-                            started = False
-                            with suppress(asyncio.TimeoutError):
-                                started = await asyncio.wait_for(backend.mcproc_done_starting(), HOLD_TIMEOUT)
+                        # Keep client connected until server starts (or fails to start)
+                        started = False
+                        with suppress(asyncio.TimeoutError):
+                            started = await asyncio.wait_for(backend.mcproc_done_starting(), HOLD_TIMEOUT)
 
-                            if started:
-                                # Forward client logging in to backend if it started successfully
-                                conn_logger.debug("Backend server started successfully")
-                                await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
-                            else:
-                                # Respond to client logging in if server failed to start
-                                conn_logger.debug("Backend server failed to start on time, sending waking kick msg")
-                                await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)        
+                        if started:
+                            # Forward client logging in to backend if it started successfully
+                            conn_logger.debug("Backend server started successfully")
+                            await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
                         else:
-                            # Respond to client not logging in while server is sleeping
+                            # Respond to client logging in if server failed to start
+                            conn_logger.debug("Backend server failed to start on time, sending waking kick msg")
                             await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)        
                     else:
-                        # Backend server is running, forward packets to it regardless of whether the client is logging in or not
-                        await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
+                        # Respond to client not logging in while server is sleeping
+                        await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)        
                 else:
-                    conn_logger.debug("%s backend is down, closing connection", backend.name)
+                    # Backend server is running, forward packets to it regardless of whether the client is logging in or not
+                    await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
             else:
                 conn_logger.debug("Could not identify backend, closing connection")
         except Exception as err:
@@ -301,7 +298,7 @@ class MCProxy(BaseAsyncContextManager):
             writer.close()
             await writer.wait_closed()
 
-    async def serve_forever(self):
+    async def run(self):
         await self.start()
         await self.proxy_server.serve_forever()
 

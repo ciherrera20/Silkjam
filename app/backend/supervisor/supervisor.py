@@ -1,6 +1,6 @@
 import asyncio
 from enum import IntEnum
-from typing import AsyncContextManager, Iterable, Callable, Coroutine, Any
+from typing import Iterable, Any
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 import logging
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 #
 # Project imports
 #
-from core.baseacm import BaseAsyncContextManager
+from .base_unit import BaseUnit
 from utils.logger_adapters import PrefixLoggerAdapter
 
 class Status(IntEnum):
@@ -20,7 +20,7 @@ class Status(IntEnum):
     EXITING = 3
     STOPPED = 4
 
-class Supervisor(BaseAsyncContextManager):
+class Supervisor(BaseUnit):
     """Manages the lifecycle of asynchronous units.
 
     Each unit is an asynchronous context manager with main coroutine to
@@ -58,7 +58,6 @@ class Supervisor(BaseAsyncContextManager):
     @dataclass
     class State:
         """Unit state"""
-        runfunc: Callable[[], Coroutine[Any, Any, None]]
         restart: bool
         status: Status = Status.READY
         task: asyncio.Task = None
@@ -99,8 +98,8 @@ class Supervisor(BaseAsyncContextManager):
         self.stack: AsyncExitStack
         self.log = PrefixLoggerAdapter(logger, "supervisor")
 
-        self._units: dict[AsyncContextManager, Supervisor.State] = {}  # unit -> Supervisor.State
-        self._running_unit_tasks: dict[asyncio.Task, AsyncContextManager] = {}  # task -> unit
+        self._units: dict[BaseUnit, Supervisor.State] = {}  # unit -> Supervisor.State
+        self._running_unit_tasks: dict[asyncio.Task, BaseUnit] = {}  # task -> unit
         self._lock: asyncio.Lock = asyncio.Lock()  # synchronize access to _running_unit_tasks
         self._command_queue: asyncio.Queue[Supervisor.Command] = asyncio.Queue()  # hold pending commands
 
@@ -122,13 +121,13 @@ class Supervisor(BaseAsyncContextManager):
 
     def _start_unit(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ):
         """Create background task to run unit through its lifecycle. Must be
         called within supervisor context, and unit must have been added.
 
         Args:
-            unit (AsyncContextManager): Unit to start.
+            unit (BaseUnit): Unit to start.
         """
         # Unit must exist
         self.log.info("Starting %s", unit)
@@ -139,14 +138,14 @@ class Supervisor(BaseAsyncContextManager):
 
     async def _run_unit(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> Any:
         """Coroutine to run a unit through its lifecycle. Exceptions at any
         stage are caught and stored, except for `KeyboardInterrupt` and
         `SystemExit`, which are propagated.
         
         Args:
-            unit (AsyncContextManager): Unit to run.
+            unit (BaseUnit): Unit to run.
 
         Returns:
             Any: Return value of the unit's main coroutine, or exception
@@ -191,7 +190,7 @@ class Supervisor(BaseAsyncContextManager):
                     await asyncio.sleep(0)
 
                 self.log.debug("Running %s", unit)
-                state.result = await state.runfunc()
+                state.result = await unit.run()
             except BaseException as err:  # Run failed
                 if isinstance(err, asyncio.CancelledError):
                     self.log.error("%s canceled", unit)
@@ -235,14 +234,14 @@ class Supervisor(BaseAsyncContextManager):
 
     def _stop_unit(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ):
         """Cancel the background task running a unit. Must be called within
         supervisor context, unit must have been added, and unit must currently
         be running.
 
         Args:
-            unit (AsyncContextManager): Unit to stop.
+            unit (BaseUnit): Unit to stop.
         """
         # Unit must exist
         # Task must be in running tasks
@@ -252,13 +251,13 @@ class Supervisor(BaseAsyncContextManager):
 
     def _handle_command_queue(
             self,
-            item: tuple[Command, AsyncContextManager]=None,
+            item: tuple[Command, BaseUnit]=None,
             allowed: set[Command]={Command.START, Command.STOP}
         ):
         """Handles executing commands in the command queue.
 
         Args:
-            item (tuple[Command, AsyncContextManager], optional): Command to
+            item (tuple[Command, BaseUnit], optional): Command to
                 start with. Defaults to None.
             allowed (dict, optional): Commands to allow. Defaults to
                 {Command.START, Command.STOP}.
@@ -310,10 +309,10 @@ class Supervisor(BaseAsyncContextManager):
         ) -> tuple[
             tuple[
                 set[asyncio.Event],
-                dict[AsyncContextManager, None | BaseException]],
+                dict[BaseUnit, None | BaseException]],
             tuple[
                 set[asyncio.Event],
-                set[AsyncContextManager]
+                set[BaseUnit]
             ]
         ]:
             """Supervise units until some condition is met. A set of events can be
@@ -337,11 +336,11 @@ class Supervisor(BaseAsyncContextManager):
                 tuple[
                     tuple[
                         set[asyncio.Event],
-                        dict[AsyncContextManager, None | BaseException]
+                        dict[BaseUnit, None | BaseException]
                     ],
                     tuple[
                         set[asyncio.Event],
-                        set[AsyncContextManager]
+                        set[BaseUnit]
                     ]
                 ]: (done_events, done_units), (pending_events, pending_units).
                     done_units is a dictionary from units to their results or
@@ -431,8 +430,7 @@ class Supervisor(BaseAsyncContextManager):
 
     def add_unit(
             self,
-            unit: AsyncContextManager,
-            runfunc: Callable[[], Coroutine[Any, Any, None]],
+            unit: BaseUnit,
             restart: bool = True,
             stopped: bool = False
         ) -> bool:
@@ -440,10 +438,7 @@ class Supervisor(BaseAsyncContextManager):
         by entering it using async with or by directly calling start.
 
         Args:
-            unit (AsyncContextManager): Unit to add.
-            runfunc (Callable[[], Coroutine[Any, Any, None]]): Unit's main
-                coroutine that runs within the unit's context and executes
-                whatever functionality the unit is meant to perform.
+            unit (BaseUnit): Unit to add.
             restart (bool, optional): Whether to restart the unit when it
                 exits. Defaults to True.
             stopped (bool, optional): Whether to add the unit as stopped,
@@ -460,21 +455,21 @@ class Supervisor(BaseAsyncContextManager):
         # Add unit
         self.log.debug("Adding %s", unit)
         if not stopped:
-            self._units[unit] = self.State(runfunc, restart, Status.READY)
+            self._units[unit] = self.State(restart, Status.READY)
             self.start_unit_nowait(unit)
         else:
-            self._units[unit] = self.State(runfunc, restart, Status.STOPPED)
+            self._units[unit] = self.State(restart, Status.STOPPED)
         return True
 
     def remove_unit_nowait(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> bool:
         """Remove a unit. Can be called before the supervisor is started
         either by entering it using async with or by directly calling start.
 
         Args:
-            unit (AsyncContextManager): Unit to remove.
+            unit (BaseUnit): Unit to remove.
 
         Returns:
             bool: True if the unit was successfully removed. False if the unit
@@ -489,7 +484,7 @@ class Supervisor(BaseAsyncContextManager):
 
     def start_unit_nowait(
             self,
-            unit: AsyncContextManager,
+            unit: BaseUnit,
         ) -> bool:
         """Schedule a unit to be started by the supervisor.
 
@@ -497,7 +492,7 @@ class Supervisor(BaseAsyncContextManager):
         not be scheduled to be started.
 
         Args:
-            unit (AsyncContextManager): Unit to start.
+            unit (BaseUnit): Unit to start.
 
         Returns:
             bool: True if the unit was successfully scheduled to be started,
@@ -522,12 +517,12 @@ class Supervisor(BaseAsyncContextManager):
 
     async def supervise_until_done_starting(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> bool:
         """Wait for a unit to finish starting while running all other units.
 
         Args:
-            unit (AsyncContextManager): Unit to wait for.
+            unit (BaseUnit): Unit to wait for.
 
         Returns:
             bool: True if the unit finished starting successfully or was
@@ -553,7 +548,7 @@ class Supervisor(BaseAsyncContextManager):
 
     async def done_starting(
         self,
-        unit: AsyncContextManager
+        unit: BaseUnit
     ) -> bool:
         """Wait for a unit to finish starting without running other units.
 
@@ -561,7 +556,7 @@ class Supervisor(BaseAsyncContextManager):
         cannot be run in more than one task at a time.
 
         Args:
-            unit (AsyncContextManager): Unit to wait for.
+            unit (BaseUnit): Unit to wait for.
 
         Returns:
             bool: True if the unit finished starting successfully or was
@@ -586,14 +581,14 @@ class Supervisor(BaseAsyncContextManager):
 
     async def start_unit(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> bool:
         """Schedule a unit to start if it does not already have a start
         scheduled and wait for it to finish starting while running all other
         units.
 
         Args:
-            unit (AsyncContextManager): Unit to start and wait for.
+            unit (BaseUnit): Unit to start and wait for.
 
         Returns:
             bool: True if the unit started or was already started and is
@@ -607,7 +602,7 @@ class Supervisor(BaseAsyncContextManager):
 
     def stop_unit_nowait(
             self,
-            unit: AsyncContextManager,
+            unit: BaseUnit,
             force: bool=False
         ) -> bool:
         """Schedule a unit to be stopped by the supervisor.
@@ -620,7 +615,7 @@ class Supervisor(BaseAsyncContextManager):
         currently running, the stop is scheduled immediately.
 
         Args:
-            unit (AsyncContextManager): Unit to stop.
+            unit (BaseUnit): Unit to stop.
             force (bool, optional): Whether or not to force stop the unit.
 
         Returns:
@@ -653,12 +648,12 @@ class Supervisor(BaseAsyncContextManager):
 
     async def supervise_until_done_stopping(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> bool:
         """Wait for a unit to finish stopping while running all other units.
 
         Args:
-            unit (AsyncContextManager): Unit to wait for.
+            unit (BaseUnit): Unit to wait for.
 
         Returns:
             bool: True if the unit finished stopping successfully or was
@@ -684,7 +679,7 @@ class Supervisor(BaseAsyncContextManager):
 
     async def done_stopping(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> bool:
         """Wait for a unit to finish stopping without running other units.
 
@@ -692,7 +687,7 @@ class Supervisor(BaseAsyncContextManager):
         cannot be run in more than one task at a time.
 
         Args:
-            unit (AsyncContextManager): Unit to wait for.
+            unit (BaseUnit): Unit to wait for.
 
         Returns:
             bool: True if the unit finished stopping successfully or was
@@ -717,7 +712,7 @@ class Supervisor(BaseAsyncContextManager):
 
     async def stop_unit(
             self,
-            unit: AsyncContextManager,
+            unit: BaseUnit,
             force: bool=False
         ) -> bool:
         """Schedule a unit to stop if it does not already have a stop
@@ -731,7 +726,7 @@ class Supervisor(BaseAsyncContextManager):
         stop is scheduled immediately.
 
         Args:
-            unit (AsyncContextManager): Unit to stop and wait for.
+            unit (BaseUnit): Unit to stop and wait for.
             force (bool, optional): Whether or not to force stop the unit.
 
         Returns:
@@ -744,7 +739,7 @@ class Supervisor(BaseAsyncContextManager):
 
     def status(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> Status | None:
         """Get the status of a unit.
 
@@ -759,7 +754,7 @@ class Supervisor(BaseAsyncContextManager):
             (e.g. if restart=False, or the unit was stopped explicitly).
 
         Args:
-            unit (AsyncContextManager): Unit to return the status for.
+            unit (BaseUnit): Unit to return the status for.
 
         Returns:
             Status | None: Unit's status, or None if the unit has not
@@ -771,12 +766,12 @@ class Supervisor(BaseAsyncContextManager):
 
     def is_ready(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> bool | None:
         """Check wether a unit is currently ready.
 
         Args:
-            unit (AsyncContextManager): Unit to check.
+            unit (BaseUnit): Unit to check.
 
         Returns:
             bool | None: Whether the unit is currently ready, or None if the
@@ -788,12 +783,12 @@ class Supervisor(BaseAsyncContextManager):
 
     def is_starting(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> bool | None:
         """Check wether a unit is currently starting.
 
         Args:
-            unit (AsyncContextManager): Unit to check.
+            unit (BaseUnit): Unit to check.
 
         Returns:
             bool | None: Whether the unit is currently starting, or None if
@@ -805,12 +800,12 @@ class Supervisor(BaseAsyncContextManager):
 
     def is_running(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> bool | None:
         """Check wether a unit is currently running.
 
         Args:
-            unit (AsyncContextManager): Unit to check.
+            unit (BaseUnit): Unit to check.
 
         Returns:
             bool | None: Whether the unit is currently running, or None if the
@@ -822,12 +817,12 @@ class Supervisor(BaseAsyncContextManager):
 
     def is_stopping(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> bool | None:
         """Check wether a unit is currently stopping.
 
         Args:
-            unit (AsyncContextManager): Unit to check.
+            unit (BaseUnit): Unit to check.
 
         Returns:
             bool | None: Whether the unit is currently stopping, or None if
@@ -839,12 +834,12 @@ class Supervisor(BaseAsyncContextManager):
 
     def is_stopped(
             self,
-            unit: AsyncContextManager
+            unit: BaseUnit
         ) -> bool | None:
         """Check wether a unit is currently stopped.
 
         Args:
-            unit (AsyncContextManager): Unit to check.
+            unit (BaseUnit): Unit to check.
 
         Returns:
             bool | None: Whether the unit is currently stopped, or None if the
@@ -861,10 +856,10 @@ class Supervisor(BaseAsyncContextManager):
     ) -> tuple[
         tuple[
             set[asyncio.Event],
-            dict[AsyncContextManager, None | BaseException]],
+            dict[BaseUnit, None | BaseException]],
         tuple[
             set[asyncio.Event],
-            set[AsyncContextManager]
+            set[BaseUnit]
         ]
     ]:
         """Supervise units until some condition is met. A set of events can be
@@ -891,11 +886,11 @@ class Supervisor(BaseAsyncContextManager):
             tuple[
                 tuple[
                     set[asyncio.Event],
-                    dict[AsyncContextManager, None | BaseException]
+                    dict[BaseUnit, None | BaseException]
                 ],
                 tuple[
                     set[asyncio.Event],
-                    set[AsyncContextManager]
+                    set[BaseUnit]
                 ]
             ]: (done_events, done_units), (pending_events, pending_units).
                 done_units is a dictionary from units to their results or
@@ -914,24 +909,7 @@ class Supervisor(BaseAsyncContextManager):
         await self.start()
         return await self._supervise_until(events, return_when)
 
-    async def supervise_forever(self):
+    async def run(self):
         """Supervises units forever"""
         while True:
             await self.supervise_until()
-
-class Timer(BaseAsyncContextManager):
-    def __init__(self, timeout):
-        super().__init__()
-        self.timeout = timeout
-
-    async def _start(self):
-        pass
-
-    async def _stop(self, *args):
-        pass
-
-    async def wait(self):
-        await asyncio.sleep(self.timeout)
-
-    def __repr__(self):
-        return f"Timer({self.timeout})"

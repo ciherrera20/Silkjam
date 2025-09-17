@@ -1,0 +1,195 @@
+import re
+import nbtlib
+import asyncio
+import logging
+from pathlib import Path
+from datetime import datetime
+from contextlib import AbstractContextManager, asynccontextmanager
+from mctools import AsyncRCONClient
+
+#
+# Project imports
+#
+from supervisor import BaseUnit
+from utils.logger_adapters import PrefixLoggerAdapter
+from utils.backup_strategies import get_stale_backups
+from models import BackupProperties
+
+type AsyncRCONClientFactory = callable[[], AbstractContextManager[AsyncRCONClient]]
+
+class MCBackupManager(BaseUnit):
+    DATE_FMT = "%Y-%m-%d_%H:%M:%S"
+    BACKUP_REGEX = re.compile(r".*?(\d+)\.tar\.gz")
+    TICKS_PER_SECOND = 20
+    TICKS_PER_MINUTE = TICKS_PER_SECOND * 60
+    MIN_INTERVAL = 60
+
+    def __init__(
+            self,
+            root: Path,
+            backup_root: Path,
+            backup_properties: BackupProperties,
+            arcon_client_factory: AsyncRCONClientFactory,
+            logger: logging.Logger | logging.LoggerAdapter | None=None,
+        ):
+        super().__init__()
+        if logger is None:
+            logger = logging.getLogger(__name__)
+        self.log = PrefixLoggerAdapter(logger, "backup_manager")
+        self.root = root
+        self.backup_root = backup_root
+        self.backup_root.mkdir(parents=True, exist_ok=True)
+        self.backup_properties = backup_properties
+        self.arcon_client_factory = arcon_client_factory
+
+    @property
+    def tick_interval(self):
+        return self.backup_properties.interval * self.TICKS_PER_MINUTE
+
+    async def _start(self):
+        await super()._start()
+
+    async def _stop(self, *args):
+        await super()._stop(*args)
+
+    def load_play_time(self):
+        # Read play time from level.dat
+        nbtfile = nbtlib.load(self.root / "world" / "level.dat")
+        return int(nbtfile.root["Data"]["Time"])
+
+    def load_backups_list(self):
+        # Grab current backups from backup directory
+        backups = []
+        self.backup_root.mkdir(parents=True, exist_ok=True)
+        for p in self.backup_root.iterdir():
+            if p.is_file():
+                if m := self.BACKUP_REGEX.fullmatch(p.name):
+                    ts = int(m.group(1))
+                    backups.append((ts, p))
+        backups.sort()
+        return backups
+
+    @asynccontextmanager
+    async def autosave_off(self, client: AsyncRCONClient=None):
+        if client is None:
+            # Create client if it was not provided and close it when done
+            async with self.arcon_client_factory() as client:
+                async with self.autosave_off(client) as client:
+                    yield client
+        else:
+            # Check if auto save is on and turn it off if it is
+            response = await client.command("save-off")
+            if response == "Automatic saving is now disabled":
+                prev_autosave_on = True
+            elif response == "Saving is already turned off":
+                prev_autosave_on = False
+            else:
+                raise RuntimeError("save-off command failed with the following response: %s", response)
+
+            # Do stuff with auto save off
+            yield client
+
+            # Turn auto save back on if it was on
+            if prev_autosave_on:
+                await client.command("save-on")
+
+    async def create_backup(self, name, retry_interval=5, max_retries=3):
+        backup: Path = self.backup_root / name
+        tmp: Path = self.backup_root / (name + ".part")
+        tmp.touch(exist_ok=True)
+
+        try:
+            for _ in range(max_retries):
+                proc = await asyncio.create_subprocess_exec(
+                    "tar",
+                    "-czf",
+                    tmp,
+                    "-C",
+                    self.root / "world",
+                    ".",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
+                stdout = stdout.decode("utf-8")
+                stderr = stderr.decode("utf-8")
+
+                # Check for errors
+                if proc.returncode != 0:
+                    # Fatal error ocurred
+                    self.log.debug("tar process failed with return code %s and stderr output %s", proc.returncode, stderr.decode("utf-8"))
+                    raise RuntimeError(f"Creating backup {name} failed with fatal error: {stderr}")
+                elif len(stderr) > 0:
+                    # Non fatal error ocurred
+                    self.log.debug("Retrying backup %s: stdout=%s, stderr=%s", name, stdout, stderr)
+                    await asyncio.sleep(retry_interval)
+                else:
+                    # Backup succeeded
+                    self.log.debug("Backup %s created successfully: stdout=%s, stderr=%s", name, stdout, stderr)
+                    tmp.rename(backup)  # atomic "commit"
+                    return
+
+            # Loop finished, meaning all retries failed
+            raise RuntimeError(f"Creating backup {name} failed: exceeded the maximum number of backup retries ({max_retries})")
+        finally:
+            if tmp.is_file():
+                self.log.warning("Cleaning up partial backup %s", tmp.name)
+                tmp.unlink(missing_ok=True)  # cleanup leftover partials
+
+    def remove_stale_backups(self, backups, total_ticks):
+        # Remove stale backups
+        stale_backups = get_stale_backups(backups, total_ticks, self.backup_properties.max_backups, self.tick_interval, key=lambda backup: backup[0])
+        for _, p in stale_backups:
+            self.log.info("Removing stale backup %s", p.name)
+            p.unlink(missing_ok=True)
+
+    async def run(self):
+        while True:
+            self.log.debug("Checking if backup is needed")
+            backups = self.load_backups_list()
+
+            # Read world time
+            total_ticks = self.load_play_time()
+            self.log.debug("Total ticks is %s", total_ticks)
+            if len(backups) == 0:
+                self.log.debug("No backups found")
+            else:
+                self.log.debug("Ticks since last backup is %s, tick_interval is %s", total_ticks - backups[-1][0], self.tick_interval)
+
+            create_backup = len(backups) == 0 or ((total_ticks - backups[-1][0]) // self.tick_interval) > 0
+            if create_backup:
+                name = f"world_{datetime.now().strftime(self.DATE_FMT)}_{total_ticks}.tar.gz"
+
+                self.log.debug("Starting backup %s", name)
+                try:
+                    async with self.autosave_off() as client:
+                        await client.command("say Backing up world")
+
+                        # Save all chunks to disk
+                        response = await client.command("save-all")
+                        if "Saved the game" not in response:
+                            raise RuntimeError("save-all command failed with the following response: %s", response)
+
+                        # Try creating backup
+                        try:
+                            await self.create_backup(name)
+                        except RuntimeError as err:
+                            await client.command("say §4Backup failed")
+                        else:
+                            await client.command("say §2Backup succeeded")
+                            self.log.info("Created backup %s", name)
+                except Exception as err:
+                    self.log.exception("Exception caught while creating backup: %s", err)
+
+                self.remove_stale_backups(backups, total_ticks)
+                sleep_time = max(self.MIN_INTERVAL, self.backup_properties.interval * 60)  # Convert to seconds
+            else:
+                self.log.debug("No backup needed")
+                sleep_time = max(self.MIN_INTERVAL, (self.tick_interval - (total_ticks - backups[-1][0])) // 20)  # Calculate time until next backup
+
+            # Sleep until next backup check
+            self.log.debug("Next backup check scheduled in %ss", sleep_time)
+            await asyncio.sleep(sleep_time)
+
+    def __repr__(self):
+        return "MCBackupManager"

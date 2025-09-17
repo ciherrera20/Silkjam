@@ -1,18 +1,16 @@
 import os
-import json
 import asyncio
 import logging
 from pathlib import Path
-from collections import defaultdict
 
 #
 # Project imports
 #
-from .supervisor import Supervisor
+from supervisor import Supervisor
 from .backend import MCBackend
 from .proxy import MCProxy
 from utils.logger_adapters import PrefixLoggerAdapter
-from models.config import Config
+from models.config import Config, UNKNOWN_VERSION
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
@@ -96,7 +94,7 @@ class MCOrchestrator(Supervisor):
                 else:
                     proxy = MCProxy(self.backends, listing)
                     self.proxies[name] = proxy
-                    self.add_unit(proxy, proxy.serve_forever)
+                    self.add_unit(proxy)
 
         # Cleanup any proxies in the listing that no longer exist
         removed_proxy_names = set()
@@ -121,10 +119,16 @@ class MCOrchestrator(Supervisor):
                 elif not listing.enabled:
                     self.log.info("Skipping disabled server listing entry %s", name)
                 else:
-                    backend = MCBackend(self.root / "servers" / name, self.root / "backups" / name, self.acquire_port, listing)
+                    backend = MCBackend(
+                        self.root / "servers" / name,
+                        self.root / "backups" / name,
+                        self.acquire_port,
+                        listing,
+                        self
+                    )
                     backend.on_listing_change(self.update_config)
                     self.backends[name] = backend
-                    self.add_unit(backend, backend.serve_forever)
+                    self.add_unit(backend, stopped=listing.sleep_properties.timeout is not None and listing.version != UNKNOWN_VERSION)
 
         # Cleanup any servers in the listing that no longer exist
         removed_backend_names = set()
@@ -135,7 +139,7 @@ class MCOrchestrator(Supervisor):
         for name in removed_backend_names:
             del self.backends[name]
 
-    async def run_servers(self):
+    async def run(self):
         while True:
             # Wait until the config changes or a proxy or server task is canceled or errors out
             (done_events, done_units), (_, _) = await self.supervise_until([self._config_changed], return_when=Supervisor.FIRST_EVENT_OR_UNIT)

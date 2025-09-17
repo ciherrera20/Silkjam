@@ -39,6 +39,7 @@ class BackupProperties(BaseModel):
     interval: int
     max_backups: int
     strategy: BackupStrategy = BackupStrategy.EXPONENTIAL
+    enabled: bool
 
 class Version(BaseModel):
     name: str
@@ -50,7 +51,12 @@ class ServerListing(BaseModel):
     name: str
     version: Version = UNKNOWN_VERSION
     sleep_properties: SleepProperties = SleepProperties()
-    backup_properties: BackupProperties | None = BackupProperties(interval=60, max_backups=1, strategy=BackupStrategy.EXPONENTIAL)
+    backup_properties: BackupProperties = BackupProperties(
+        interval=60,
+        max_backups=1,
+        strategy=BackupStrategy.EXPONENTIAL,
+        enabled=False
+    )
     enabled: bool
 
     # Annotate listing as valid or not

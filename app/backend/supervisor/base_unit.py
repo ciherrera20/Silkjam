@@ -2,7 +2,7 @@ from typing import Self
 from contextlib import AbstractAsyncContextManager
 from abc import ABC, abstractmethod
 
-class BaseAsyncContextManager(AbstractAsyncContextManager, ABC):
+class BaseUnit(AbstractAsyncContextManager, ABC):
     def __init__(self):
         self._started: bool = False
 
@@ -28,6 +28,10 @@ class BaseAsyncContextManager(AbstractAsyncContextManager, ABC):
 
     @abstractmethod
     async def _stop(self, *args):
+        pass
+
+    @abstractmethod
+    async def run(self):
         pass
 
     # Async context manager methods, designed to be reusable

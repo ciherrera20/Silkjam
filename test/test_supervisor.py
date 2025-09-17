@@ -9,16 +9,15 @@ logger = logging.getLogger(__name__)
 #
 import os, sys, subprocess
 ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True).stdout.decode("utf-8").strip()
-sys.path.append(os.path.join(ROOT, "app", "orchestrator"))
-from core.baseacm import BaseAsyncContextManager
-from core.supervisor import Supervisor
+sys.path.append(os.path.join(ROOT, "app", "backend"))
+from supervisor import Supervisor, BaseUnit
 from utils.logger_adapters import PrefixLoggerAdapter
 
 if __name__ == "__main__":
     import time
     import random
 
-    class Unit(BaseAsyncContextManager):
+    class Unit(BaseUnit):
         def __init__(self, name):
             super().__init__()
             self.name = name
@@ -33,7 +32,7 @@ if __name__ == "__main__":
             self.log.info("Exiting")
             await asyncio.sleep(1)
 
-        async def run_forever(self):
+        async def run(self):
             i = 1
             while True:
                 self.log.info("Working... [%s]", i)
@@ -62,7 +61,7 @@ if __name__ == "__main__":
         async with supervisor:
             units = [Unit(f"unit {i}") for i in range(1)]
             for unit in units:
-                supervisor.add_unit(unit, unit.run_forever, restart=False, stopped=False)
+                supervisor.add_unit(unit, restart=False, stopped=False)
             await supervisor.supervise_until_done_starting(unit)
         logger.info("Duration: %ss", time.perf_counter() - start_time)
         return supervisor
