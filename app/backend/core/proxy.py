@@ -16,7 +16,7 @@ from .protocol import (
     MCProtocolError
 )
 from utils.logger_adapters import PrefixLoggerAdapter
-from models.config import ProxyListing, SUBDOMAIN_REGEX
+from models import ProxyListing, SUBDOMAIN_REGEX
 
 logger = logging.getLogger(__name__)
 
