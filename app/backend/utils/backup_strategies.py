@@ -1,9 +1,12 @@
 import math
+from typing import Iterable, TypeVar
+
+T = TypeVar("T")
 
 def to_nearest(x, d=1):
     return math.floor(x / d + 1) * d
 
-def format_backups(backups, t, n, d=1, base=2, key=lambda x: x):
+def format_backups(backups, t, n, d=1, base=2, key=lambda b: b):
     """
     b is backup, n is new, s is save, x is expire
 
@@ -12,7 +15,8 @@ def format_backups(backups, t, n, d=1, base=2, key=lambda x: x):
     """
     bins = ["_" * (base ** i) for i in range(n)]
     num_out_of_bounds = 0
-    for ts in map(key, backups):
+    for backup in backups:
+        ts = min(key(backup), t)
         i = to_nearest(t - ts, d) // d
         j = math.floor(math.log(i, 2))
         k = i - (base ** j)
@@ -36,7 +40,14 @@ def format_backups(backups, t, n, d=1, base=2, key=lambda x: x):
         s += f"|...*]"
     return s
 
-def get_stale_backups(backups, t, n, d=1, base=2, key=lambda x: x):
+def get_stale_backups(
+        backups: Iterable[T],
+        t: int,
+        n: int,
+        d: int=1,
+        base: int=2,
+        key=lambda b: b
+    ) -> set[T]:
     backups = sorted(backups, key=key)  # Sort oldest to newest
 
     # Determine the cutoff for backups and the number of backups to delete
@@ -44,15 +55,15 @@ def get_stale_backups(backups, t, n, d=1, base=2, key=lambda x: x):
     num_stale = max(0, len(backups) - n + 1)
     stale_backups = set()
 
+    if len(stale_backups) == num_stale:
+        return stale_backups
+
     # Delete first from the backups past the cutoff oldest to newest
-    idx = 0
-    while True:
+    for backup in backups:
         if len(stale_backups) < num_stale:
-            backup = backups[idx]
-            ts = key(backup)
+            ts = min(key(backup), t)
             if ts < cutoff:
                 stale_backups.add(backup)
-                idx += 1
             else:
                 break
         else:
@@ -60,22 +71,21 @@ def get_stale_backups(backups, t, n, d=1, base=2, key=lambda x: x):
 
     # Then, go through each bin from newest to oldest and delete backups newest to oldest
     counts = [1] + [0] * (n - 1)
-    for ts in map(key, backups):
+    for backup in backups:
+        ts = min(key(backup), t)
         if ts >= cutoff:
             i = to_nearest(t - ts, d) // d
             j = math.floor(math.log(i, 2))
             counts[j] += 1
 
-    idx = len(backups) - 1
-    while True:
+    for backup in reversed(backups):
         if len(stale_backups) < num_stale:
-            backup = backups[idx]
-            ts = key(backup)
+            ts = min(key(backup), t)
             i = to_nearest(t - ts, d) // d
             j = math.floor(math.log(i, 2))
             if ts >= cutoff and counts[j] > 1:
                 stale_backups.add(backup)
                 counts[j] -= 1
-            idx -= 1
         else:
-            return stale_backups
+            break
+    return stale_backups

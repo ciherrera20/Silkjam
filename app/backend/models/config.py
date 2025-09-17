@@ -1,74 +1,11 @@
 import re
-import enum
 import json
 from pathlib import Path
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, model_validator
+from .proxy_listing import ProxyListing
+from .server_listing import ServerListing
 
 SUBDOMAIN_REGEX: re.Pattern = re.compile(r"(?:(?!-)[a-zA-Z0-9\-]+\.)*?(?!-)[a-zA-Z0-9\-]+")
-
-class ProxyListing(BaseModel):
-    name: str
-    port: int
-    enabled: bool
-    subdomains: dict[str, str]
-
-    # Annotate listing as valid or not
-    _errors: list[str] = PrivateAttr(default_factory=list)
-
-    @property
-    def valid(self):
-        return len(self._errors) == 0
-
-    @property
-    def errors(self):
-        return self._errors
-
-class SleepProperties(BaseModel):
-    timeout: int | None = None
-    motd: str | None = None
-    waking_kick_msg: str = Field(default="§eServer is waking up, try again soon...", alias="waking-kick-msg")
-
-class BackupStrategy(str, enum.Enum):
-    EXPONENTIAL = "exponential"
-    FIXED = "fixed"
-
-    def __str__(self):
-        return self.value
-
-class BackupProperties(BaseModel):
-    interval: int
-    max_backups: int
-    strategy: BackupStrategy = BackupStrategy.EXPONENTIAL
-    enabled: bool
-
-class Version(BaseModel):
-    name: str
-    protocol: int
-
-UNKNOWN_VERSION = Version(name="unknown", protocol=0)
-
-class ServerListing(BaseModel):
-    name: str
-    version: Version = UNKNOWN_VERSION
-    sleep_properties: SleepProperties = SleepProperties()
-    backup_properties: BackupProperties = BackupProperties(
-        interval=60,
-        max_backups=1,
-        strategy=BackupStrategy.EXPONENTIAL,
-        enabled=False
-    )
-    enabled: bool
-
-    # Annotate listing as valid or not
-    _errors: list[str] = PrivateAttr(default_factory=list)
-
-    @property
-    def valid(self):
-        return len(self._errors) == 0
-
-    @property
-    def errors(self):
-        return self._errors
 
 class Config(BaseModel):
     proxy_listing: list[ProxyListing]
