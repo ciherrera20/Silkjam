@@ -120,7 +120,6 @@ class MCOrchestrator(Supervisor):
                 else:
                     backend = MCBackend(
                         self.root / "servers" / name,
-                        self.root / "backups" / name,
                         self.acquire_port,
                         listing,
                         self

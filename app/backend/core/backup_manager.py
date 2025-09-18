@@ -31,13 +31,12 @@ class MCBackupManager(Timer):
             self,
             server_name: str,
             root: Path,
-            backup_root: Path,
             properties: BackupProperties,
             arcon_client_factory: AsyncRCONClientFactory,
         ):
         self.server_name = server_name
         self.root = root
-        self.backup_root = backup_root
+        self.backup_root = root / "backups"
         self.backup_root.mkdir(parents=True, exist_ok=True)
         self.properties = properties
         self.arcon_client_factory = arcon_client_factory

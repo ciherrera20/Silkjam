@@ -30,7 +30,6 @@ class MCBackend(Supervisor):
     def __init__(
         self,
         root: Path,
-        backup_root: Path,
         port_factory: PortCMFactory,
         listing: ServerListing,
         supervisor: Supervisor,
@@ -40,7 +39,6 @@ class MCBackend(Supervisor):
     ):
         super().__init__()
         self.root: Path = root
-        self.backup_root: Path = backup_root
         self.port_factory: PortCMFactory = port_factory
         self.listing: ServerListing = listing
         self.supervisor: Supervisor = supervisor
@@ -70,7 +68,6 @@ class MCBackend(Supervisor):
         self.backup_manager: MCBackupManager = MCBackupManager(
             self.name,
             self.root,
-            self.backup_root,
             self.listing.backup_properties,
             self.arcon_client_factory,
         )
