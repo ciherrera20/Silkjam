@@ -4,7 +4,7 @@ import websockets
 import json
 
 # Replace with the URL of your FastAPI WebSocket endpoint
-SERVER_ID = "the_village"
+SERVER_ID = "astraeste"
 WS_URL = f"ws://localhost:8500/ws/status/{SERVER_ID}"
 
 async def main():
@@ -13,8 +13,9 @@ async def main():
         try:
             while True:
                 message = await websocket.recv()
-                status = json.loads(message)
-                print(f"Server status: {status}")
+                print(message)
+                # status = json.loads(message)
+                # print(f"Server status: {status}")
         except websockets.ConnectionClosed:
             print("Connection closed")
 

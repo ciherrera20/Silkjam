@@ -15,31 +15,33 @@ from utils.logger_adapters import PrefixLoggerAdapter
 from utils.backup_strategies import get_stale_backups
 from models import BackupProperties
 
+logger = logging.getLogger(__name__)
+
 type AsyncRCONClientFactory = callable[[], AbstractContextManager[AsyncRCONClient]]
 
 class MCBackupManager(Timer):
     DATE_FMT = "%Y-%m-%d_%H:%M:%S"
     BACKUP_REGEX = re.compile(r".*?(\d+)\.tar\.gz")
+    PARTIAL_BACKUP_REGEX = re.compile(rf"{BACKUP_REGEX.pattern}\.part")
     TICKS_PER_SECOND = 20
     TICKS_PER_MINUTE = TICKS_PER_SECOND * 60
     MIN_INTERVAL = 60
 
     def __init__(
             self,
+            server_name: str,
             root: Path,
             backup_root: Path,
             properties: BackupProperties,
             arcon_client_factory: AsyncRCONClientFactory,
-            logger: logging.Logger | logging.LoggerAdapter | None=None,
         ):
-        if logger is None:
-            logger = logging.getLogger(__name__)
-        self.log = PrefixLoggerAdapter(logger, "backup_manager")
+        self.server_name = server_name
         self.root = root
         self.backup_root = backup_root
         self.backup_root.mkdir(parents=True, exist_ok=True)
         self.properties = properties
         self.arcon_client_factory = arcon_client_factory
+        self.log = PrefixLoggerAdapter(logger, {"server": server_name})
         super().__init__(max(self.MIN_INTERVAL, self.properties.interval * 60))
 
     @property
@@ -67,6 +69,9 @@ class MCBackupManager(Timer):
                 if m := self.BACKUP_REGEX.fullmatch(p.name):
                     ts = int(m.group(1))
                     backups.append((ts, p))
+                elif m := self.PARTIAL_BACKUP_REGEX.fullmatch(p.name):
+                    self.log.warning("Removing partial backup %s", p.name)
+                    p.unlink(missing_ok=True)
         backups.sort()
         return backups
 
@@ -80,9 +85,9 @@ class MCBackupManager(Timer):
         else:
             # Check if auto save is on and turn it off if it is
             response = await client.command("save-off")
-            if response == "Automatic saving is now disabled":
+            if "Automatic saving is now disabled" in response:
                 prev_autosave_on = True
-            elif response == "Saving is already turned off":
+            elif "Saving is already turned off" in response:
                 prev_autosave_on = False
             else:
                 raise RuntimeError("save-off command failed with the following response: %s", response)
@@ -119,19 +124,18 @@ class MCBackupManager(Timer):
                 stdout, stderr = await proc.communicate()
                 stdout = stdout.decode("utf-8")
                 stderr = stderr.decode("utf-8")
+                self.log.debug("tar process returncode=%s, stdout=%s, stderr=%s", proc.returncode, stdout, stderr)
 
                 # Check for errors
                 if proc.returncode != 0:
                     # Fatal error ocurred
-                    self.log.debug("tar process failed with return code %s and stderr output %s", proc.returncode, stderr.decode("utf-8"))
-                    raise RuntimeError(f"Creating backup {name} failed with fatal error: {stderr}")
+                    raise RuntimeError(f"Creating backup {name} failed with return code {proc.returncode} and error message: {stderr}")
                 elif len(stderr) > 0:
                     # Non fatal error ocurred
-                    self.log.debug("Retrying backup %s: stdout=%s, stderr=%s", name, stdout, stderr)
+                    self.log.warning("Retrying backup %s: stdout=%s, stderr=%s", name, stdout, stderr)
                     await asyncio.sleep(retry_interval)
                 else:
                     # Backup succeeded
-                    self.log.debug("Backup %s created successfully: stdout=%s, stderr=%s", name, stdout, stderr)
                     tmp.rename(backup)  # atomic "commit"
                     return
 
@@ -139,7 +143,7 @@ class MCBackupManager(Timer):
             raise RuntimeError(f"Creating backup {name} failed: exceeded the maximum number of backup retries ({max_retries})")
         finally:
             if tmp.is_file():
-                self.log.warning("Cleaning up partial backup %s", tmp.name)
+                self.log.warning("Removing partial backup %s", tmp.name)
                 tmp.unlink(missing_ok=True)  # cleanup leftover partials
 
     async def save_and_backup(self, name: str):
@@ -194,7 +198,7 @@ class MCBackupManager(Timer):
 
             if self.properties.max_backups > 0:
                 if len(backups) == 0 or (total_ticks - backups[-1][0]) // self.tick_interval > 0:
-                    self.save_and_backup(f"world_{datetime.now().strftime(self.DATE_FMT)}_{total_ticks}.tar.gz")
+                    await self.save_and_backup(f"world_{datetime.now().strftime(self.DATE_FMT)}_{total_ticks}.tar.gz")
                     self.reset()
                 else:
                     self.log.debug("No backup needed")

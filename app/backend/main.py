@@ -13,15 +13,22 @@ from core.orchestrator import MCOrchestrator
 from models.config import Config
 
 if os.environ.get("DEBUG", "").lower() == "true":
+    format = "%(levelname)s [%(asctime)s] [%(name)s.%(funcName)s:%(lineno)d] %(message)s"
     level = logging.DEBUG
 else:
+    format = "%(levelname)s [%(asctime)s] %(message)s"
     level = logging.INFO
 logging.basicConfig(
     level=level,
-    format="%(levelname)s [%(name)s.%(funcName)s:%(lineno)d] [%(asctime)s] %(message)s",
+    format=format,
     handlers=[logging.StreamHandler(sys.stdout)]  # ensure logs go to stdout for Docker
 )
 logging.getLogger("asyncio").setLevel(logging.WARNING)
+logging.getLogger("core.protocol").setLevel(logging.WARNING)
+logging.getLogger("core.status_checker").setLevel(logging.INFO)
+logging.getLogger("core.backup_manager").setLevel(logging.INFO)
+logging.getLogger("supervisor.supervisor").setLevel(logging.WARNING)
+logging.getLogger("supervisor.timer").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 logger.info("Logging level is %s", level)
 

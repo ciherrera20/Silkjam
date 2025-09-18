@@ -24,7 +24,6 @@ class AcquirePortError(RuntimeError):
 class MCOrchestrator(Supervisor):
     def __init__(self, root: str | Path):
         super().__init__()
-        self.log = PrefixLoggerAdapter(logger, 'orchestrator')
 
         self.root = Path(root)
 
@@ -61,14 +60,14 @@ class MCOrchestrator(Supervisor):
         if port is None:
             raise AcquirePortError(f"Could not acquire port in range {lo}:{hi}")
 
-        self.log.debug("Acquiring port %s", port)
+        logger.debug("Acquiring port %s", port)
         self.acquired_server_ports.add(port)
 
         # Yield port and deallocate after its done being used
         try:
             yield port
         finally:
-            self.log.debug("Releasing port %s", port)
+            logger.debug("Releasing port %s", port)
             self.acquired_server_ports.discard(port)
 
     def update_config(self):
@@ -84,13 +83,13 @@ class MCOrchestrator(Supervisor):
             name = listing.name
             proxy_listing_names.add(name)
             if name not in self.proxies:
-                self.log.info("Found proxy listing entry %s", name)
+                logger.info("Found proxy listing entry %s", name)
                 if not listing.valid:
-                    self.log.error("Skipping invalid proxy listing entry %s with the following error(s):", name)
+                    logger.error("Skipping invalid proxy listing entry %s with the following error(s):", name)
                     for msg in listing.errors:
-                        self.log.error(msg)
+                        logger.error(msg)
                 elif not listing.enabled:
-                    self.log.info("Skipping disabled proxy listing entry %s", name)
+                    logger.info("Skipping disabled proxy listing entry %s", name)
                 else:
                     proxy = MCProxy(self.backends, listing)
                     self.proxies[name] = proxy
@@ -111,13 +110,13 @@ class MCOrchestrator(Supervisor):
             name = listing.name
             backend_names.add(name)
             if name not in self.backends:
-                self.log.info("Found server listing entry %s", name)
+                logger.info("Found server listing entry %s", name)
                 if not listing.valid:
-                    self.log.error("Skipping invalid server listing entry %s with the following error(s):", name)
+                    logger.error("Skipping invalid server listing entry %s with the following error(s):", name)
                     for msg in listing.errors:
-                        self.log.error(msg)
+                        logger.error(msg)
                 elif not listing.enabled:
-                    self.log.info("Skipping disabled server listing entry %s", name)
+                    logger.info("Skipping disabled server listing entry %s", name)
                 else:
                     backend = MCBackend(
                         self.root / "servers" / name,
@@ -144,14 +143,14 @@ class MCOrchestrator(Supervisor):
             # Wait until the config changes or a proxy or server task is canceled or errors out
             (done_events, done_units), (_, _) = await self.supervise_until([self._config_changed], return_when=Supervisor.FIRST_EVENT_OR_UNIT)
             if self._config_changed in done_events:
-                self.log.debug("Config change requested")
+                logger.debug("Config change requested")
                 self.reload_config()
                 self._config_changed.clear()
             for unit in done_units:
                 if isinstance(unit, MCBackend):
                     result = done_units[unit]
                     if isinstance(result, AcquirePortError):
-                        self.log.error("Stopping %s: could not acquire backend port", unit.name)
+                        logger.error("Stopping %s: could not acquire backend port", unit.name)
                         self.stop_unit_nowait(unit)
 
     async def _stop(self, *args):

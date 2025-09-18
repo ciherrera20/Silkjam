@@ -11,8 +11,8 @@ from mctools import AsyncPINGClient, AsyncRCONClient
 # Project imports
 #
 from supervisor import Supervisor, Timer
-from utils.logger_adapters import PrefixLoggerAdapter, BytesLoggerAdapter
-from models import ServerListing, Version, UNKNOWN_VERSION, ServerProperties
+from utils.logger_adapters import PrefixLoggerAdapter
+from models import ServerListing, Version, ServerProperties
 from core.backup_manager import MCBackupManager
 from core.status_checker import MCStatusChecker
 
@@ -25,7 +25,7 @@ class MCBackend(Supervisor):
     DONE_REGEX = re.compile(rb"^.*Done \(.*$")
 
     STDOUT_LOG_LEVEL = logging.DEBUG
-    STDERR_LOG_LEVEL = logging.ERROR
+    STDERR_LOG_LEVEL = logging.WARNING
 
     def __init__(
         self,
@@ -47,7 +47,7 @@ class MCBackend(Supervisor):
         self.stop_timeout: int = stop_timeout
         self.sigint_timeout: int = sigint_timeout
         self.sigterm_timeout: int = sigterm_timeout
-        self.log = PrefixLoggerAdapter(logger, self.listing.name)
+        self.log = PrefixLoggerAdapter(logger, {"server": self.listing.name})
 
         self.properties = ServerProperties.load(self.root / "server.properties")
         self.icon = None
@@ -60,19 +60,19 @@ class MCBackend(Supervisor):
 
         # Create status checker to check server status
         self.status_checker: MCStatusChecker = MCStatusChecker(
+            self.name,
             self.aping_client_factory,
-            self.log
         )
         self.status_checker.on_server_list_ping(self.update_stats)
         self.add_unit(self.status_checker, restart=False, stopped=True)
 
         # Create backup manager to create backups
         self.backup_manager: MCBackupManager = MCBackupManager(
+            self.name,
             self.root,
             self.backup_root,
             self.listing.backup_properties,
             self.arcon_client_factory,
-            self.log
         )
         self.add_unit(self.backup_manager, restart=True, stopped=True)
 
@@ -142,7 +142,7 @@ class MCBackend(Supervisor):
         # Open and read icon if it exists
         icon_path = self.root / "world" / "icon.png"
         if icon_path.exists():
-            self.log.info("Reading server icon properties")
+            self.log.debug("Reading server icon properties")
             with icon_path.open("rb") as f:
                 data = f.read()
             self.icon = f"data:image/png;base64,{base64.b64encode(data).decode('utf-8')}"
@@ -171,7 +171,7 @@ class MCBackend(Supervisor):
 
         # Wait until server is done initializing
         async with asyncio.TaskGroup() as tg:
-            log_stderr_task = tg.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))
+            log_stderr_task = tg.create_task(self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL))
             wait_until_done_initializing_task = tg.create_task(self.wait_until_done_initializing())
             done, pending = await asyncio.wait([wait_until_done_initializing_task, log_stderr_task], return_when=asyncio.FIRST_COMPLETED)
             if log_stderr_task in done:
@@ -192,8 +192,8 @@ class MCBackend(Supervisor):
         # Stop running units
         await super()._stop(*args)
 
-        log_stdout_task = asyncio.create_task(self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL))
-        log_stderr_task = asyncio.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))
+        log_stdout_task = asyncio.create_task(self.log_pipe(self.server_proc.stdout, self.STDOUT_LOG_LEVEL))
+        log_stderr_task = asyncio.create_task(self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL))
 
         try:
             self.log.info("Closing minecraft server process")
@@ -246,16 +246,15 @@ class MCBackend(Supervisor):
         await asyncio.gather(log_stdout_task, log_stderr_task)
 
     async def read_stdout_until_done_initializing(self):
-        pipe_logger = BytesLoggerAdapter() | PrefixLoggerAdapter(f"stdout") | self.log
         async for msg in self.server_proc.stdout:
-            pipe_logger.log(self.STDOUT_LOG_LEVEL, msg)
+            self.log.log(self.STDOUT_LOG_LEVEL, msg.decode("utf-8"))
             if m := self.STARTING_SERVER_REGEX.match(msg):
                 if m.group(1) == str(self.properties.server_port).encode("utf-8"):
                     self.log.debug("Read server starting msg")
                     break
 
         async for msg in self.server_proc.stdout:
-            pipe_logger.log(self.STDOUT_LOG_LEVEL, msg)
+            self.log.log(self.STDOUT_LOG_LEVEL, msg.decode("utf-8"))
             if self.DONE_REGEX.match(msg):
                 self.log.debug("Read done msg")
                 break
@@ -284,10 +283,9 @@ class MCBackend(Supervisor):
             raise
         self.log.debug("Server finished initializing")
 
-    async def log_pipe(self, pipe, pipe_name="pipe", level=logging.DEBUG):
-        pipe_logger = BytesLoggerAdapter() | PrefixLoggerAdapter(f"{pipe_name}") | self.log
+    async def log_pipe(self, pipe: asyncio.StreamReader, level=logging.DEBUG):
         async for msg in pipe:
-            pipe_logger.log(level, msg)
+            self.log.log(level, msg.decode("utf-8"))
 
     async def request_status_continuously(self, interval=60, retry_interval=10, max_retries=3):
         retry_count = 0
@@ -325,7 +323,6 @@ class MCBackend(Supervisor):
             # Wait until the config changes or a proxy or server task is canceled or errors out
             (done_events, done_units), (_, _) = await self.supervise_until([self._online_player_change])
             if self._online_player_change in done_events:
-                self.log.debug("Online players is %s", self.online_players)
                 if self.online_players == 0:
                     if self.is_stopped(self.sleep_timer):
                         # The timer expired and triggered a status check, which confirmed that no players are connected
@@ -336,8 +333,6 @@ class MCBackend(Supervisor):
                         self.log.debug("Setting sleep timer for %ss", self.listing.sleep_properties.timeout)
                         self.sleep_timer.timeout = self.listing.sleep_properties.timeout
                         self.sleep_timer.reset()
-                    else:
-                        self.log.debug("Server will stop in %ss if no players join", self.sleep_timer.remaining)
                 else:
                     if self.is_stopped(self.sleep_timer):
                         # The timer expired and triggered a status check, which found that there are still players online
@@ -358,8 +353,8 @@ class MCBackend(Supervisor):
         async with asyncio.TaskGroup() as tg:
             supervise_task = tg.create_task(self.supervise())
             async with asyncio.TaskGroup() as proc_tg:
-                proc_tg.create_task(self.log_pipe(self.server_proc.stdout, "stdout", self.STDOUT_LOG_LEVEL))
-                proc_tg.create_task(self.log_pipe(self.server_proc.stderr, "stderr", self.STDERR_LOG_LEVEL))
+                proc_tg.create_task(self.log_pipe(self.server_proc.stdout, self.STDOUT_LOG_LEVEL))
+                proc_tg.create_task(self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL))
             self.log.debug("Server process (pid %s) stopped communication", self.server_proc.pid)
             supervise_task.cancel()
 

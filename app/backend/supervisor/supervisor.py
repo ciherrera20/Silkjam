@@ -102,7 +102,6 @@ class Supervisor(BaseUnit):
         """Initialize supervisor"""
         super().__init__()
         self.stack: AsyncExitStack
-        self.log = PrefixLoggerAdapter(logger, "supervisor")
 
         self._units: dict[BaseUnit, Supervisor.State] = {}  # unit -> Supervisor.State
         self._running_unit_tasks: dict[asyncio.Task, BaseUnit] = {}  # task -> unit
@@ -111,13 +110,13 @@ class Supervisor(BaseUnit):
 
     async def _start(self):
         """Enter supervisor context"""
-        self.log.info("Entering")
+        logger.info("Entering")
         self.stack = AsyncExitStack()
         await self.stack.__aenter__()
 
     async def _stop(self, *args):
         """Exit supervisor context"""
-        self.log.info("Exiting")
+        logger.info("Exiting")
         for unit in self._units:
             self.stop_unit_nowait(unit, force=True)
         if len(self._running_unit_tasks) > 0 or not self._command_queue.empty():
@@ -136,7 +135,7 @@ class Supervisor(BaseUnit):
             unit (BaseUnit): Unit to start.
         """
         # Unit must exist
-        self.log.info("Starting %s", unit)
+        logger.info("Starting %s", unit)
         state = self._units[unit]
         task = asyncio.create_task(self._run_unit(unit))
         self._running_unit_tasks[task] = unit
@@ -157,7 +156,7 @@ class Supervisor(BaseUnit):
             Any: Return value of the unit's main coroutine, or exception
                 caught if the unit failed.
         """
-        self.log.debug("Running %s", unit)
+        logger.debug("Running %s", unit)
         state = self._units[unit]
         state.result = None
         state.done_entering.clear()
@@ -168,22 +167,25 @@ class Supervisor(BaseUnit):
 
             # Handle forced pending stops before entering
             if state.pending_stop and state.force_pending_stop:
-                self.log.info("%s force stopped before entering", unit)
+                logger.info("%s force stopped before entering", unit)
                 self._stop_unit(unit)
                 await asyncio.sleep(0)
 
-            self.log.debug("Entering %s", unit)
+            logger.debug("Entering %s", unit)
             await self.stack.enter_async_context(unit)
         except BaseException as err:  # Enter failed
             if isinstance(err, asyncio.CancelledError):
-                self.log.error("%s canceled while entering", unit)
+                if state.force_pending_stop:
+                    logger.info("%s canceled while entering", unit)
+                else:
+                    logger.error("%s canceled while entering", unit)
             else:
-                self.log.exception("Exception caught while entering %s: %s", unit, err)
+                logger.exception("Exception caught while entering %s: %s", unit, err)
             if isinstance(KeyboardInterrupt, SystemExit):
                 raise
             state.result = err
         else:  # Unit entered successfully
-            self.log.debug("Finished entering %s", unit)
+            logger.debug("Finished entering %s", unit)
             state.done_entering.set()
             try:  # Run unit
                 state.pending_start = False
@@ -191,42 +193,42 @@ class Supervisor(BaseUnit):
 
                 # Handle pending stops after entering
                 if state.pending_stop:
-                    self.log.info("%s stopped before running", unit)
+                    logger.info("%s stopped before running", unit)
                     self._stop_unit(unit)
                     await asyncio.sleep(0)
 
-                self.log.debug("Running %s", unit)
+                logger.debug("Running %s", unit)
                 state.result = await unit.run()
             except BaseException as err:  # Run failed
                 if isinstance(err, asyncio.CancelledError):
-                    self.log.error("%s canceled", unit)
+                    logger.info("%s canceled", unit)
                 else:
-                    self.log.exception("Exception caught while running %s: %s", unit, err)
+                    logger.exception("Exception caught while running %s: %s", unit, err)
                 if isinstance(KeyboardInterrupt, SystemExit):
                     raise
                 state.result = err
             else:  # Unit finished successfully
-                self.log.debug("Finished running %s", unit)
+                logger.debug("Finished running %s", unit)
         finally:  # Unit finished running or failed
             state.done_entering.set()
             try:  # Exit unit
                 state.pending_start = False
                 state.status = Status.EXITING
-                self.log.debug("Exiting %s", unit)
+                logger.debug("Exiting %s", unit)
                 if isinstance(state.result, BaseException):  # Propagate exception to unit's aexit
                     await unit.__aexit__(type(state.result), state.result, state.result.__traceback__)
                 else:
                     await unit.__aexit__(None, None, None)
             except BaseException as err:  # Exit failed
                 if isinstance(err, asyncio.CancelledError):
-                    self.log.error("%s canceled while exiting", unit)
+                    logger.error("%s canceled while exiting", unit)
                 else:
-                    self.log.exception("Exception caught while exiting %s: %s", unit, err)
+                    logger.exception("Exception caught while exiting %s: %s", unit, err)
                 if isinstance(KeyboardInterrupt, SystemExit):
                     raise
                 state.result = err
             else:  # Unit exited successfully
-                self.log.debug("Finished exiting %s", unit)
+                logger.debug("Finished exiting %s", unit)
 
             # Cleanup state
             state.done_exiting.set()
@@ -251,7 +253,7 @@ class Supervisor(BaseUnit):
         """
         # Unit must exist
         # Task must be in running tasks
-        self.log.debug("Stopping %s", unit)
+        logger.debug("Stopping %s", unit)
         state = self._units[unit]
         state.task.cancel()
 
@@ -274,9 +276,9 @@ class Supervisor(BaseUnit):
             while True:
                 command, unit = item
                 if command not in allowed:
-                    self.log.debug("Discarding command %s %s", command.name, unit)
+                    logger.debug("Discarding command %s %s", command.name, unit)
                 else:
-                    self.log.debug("Handling command %s %s", command.name, unit)
+                    logger.debug("Handling command %s %s", command.name, unit)
                     if command == self.Command.START:
                         if unit not in self._units:
                             raise RuntimeError(f"{unit} has not been added or has been removed")
@@ -293,15 +295,15 @@ class Supervisor(BaseUnit):
                             state = self._units[unit]
                             if state.status == Status.ENTERING:
                                 if state.force_pending_stop:
-                                    self.log.debug("%s is currently starting, forcing STOP", unit)
+                                    logger.debug("%s is currently starting, forcing STOP", unit)
                                     self._stop_unit(unit)
                                 else:
-                                    self.log.debug("%s is currently starting, scheduling STOP for after it finishes starting", unit)
+                                    logger.debug("%s is currently starting, scheduling STOP for after it finishes starting", unit)
                             elif state.pending_start:
                                 if state.force_pending_stop:
-                                    self.log.debug("%s is pending start, scheduling forced STOP for when it starts", unit)
+                                    logger.debug("%s is pending start, scheduling forced STOP for when it starts", unit)
                                 else:
-                                    self.log.debug("%s is pending start, scheduling STOP for after it finishes starting", unit)
+                                    logger.debug("%s is pending start, scheduling STOP for after it finishes starting", unit)
                             elif state.task is None:
                                 raise RuntimeError(f"{unit} is not running")
                             else:
@@ -372,7 +374,7 @@ class Supervisor(BaseUnit):
                     # Start/restart any READY units
                     for unit, state in self._units.items():
                         if state.restart and state.status == Status.READY and not state.pending_start:
-                            self.log.info("Restarting %s", unit)
+                            logger.info("Restarting %s", unit)
                             self.start_unit_nowait(unit)
 
                     # Protect critical part of supervise loop
@@ -397,7 +399,7 @@ class Supervisor(BaseUnit):
                             pending_units.discard(unit)
                             if unit in self._units:
                                 state = self._units[unit]
-                                self.log.info("%s is done with status %s", unit, state.status)
+                                logger.info("%s is done with status %s", unit, state.status)
                                 state.task = None
                             del self._running_unit_tasks[t]
 
@@ -432,7 +434,7 @@ class Supervisor(BaseUnit):
                     t.cancel()
 
             # Return information about done and pending events and units
-            self.log.debug("supervise_until return condition met: %s", return_when)
+            logger.debug("supervise_until return condition met: %s", return_when)
             return (done_events, done_units), (pending_events, pending_units)
 
     def add_unit(
@@ -460,7 +462,7 @@ class Supervisor(BaseUnit):
             return False
 
         # Add unit
-        self.log.debug("Adding %s", unit)
+        logger.debug("Adding %s", unit)
         if not stopped:
             self._units[unit] = self.State(restart, Status.READY)
             self.start_unit_nowait(unit)
@@ -485,7 +487,7 @@ class Supervisor(BaseUnit):
         """
         if unit not in self._units or self._units[unit].task is not None or self._units[unit].pending_start:
             return False
-        self.log.debug("Removing %s", unit)
+        logger.debug("Removing %s", unit)
         del self._units[unit]
         return True
 

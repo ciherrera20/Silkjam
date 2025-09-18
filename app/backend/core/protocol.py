@@ -9,7 +9,6 @@ from collections.abc import Buffer
 from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARNING)
 
 ################################################ Minecraft protocol ################################################
 # Documentation at: https://minecraft.wiki/w/Minecraft_Wiki:Protocol_documentation

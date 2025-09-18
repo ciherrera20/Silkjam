@@ -21,7 +21,7 @@ from models import ProxyListing, SUBDOMAIN_REGEX
 logger = logging.getLogger(__name__)
 
 HOSTNAME: str = os.environ["HOSTNAME"]
-HOSTNAME_REGEX: re.Pattern = re.compile(rf"^(?:({SUBDOMAIN_REGEX.pattern})\.)?{re.escape(HOSTNAME)}$")
+HOSTNAME_REGEX: re.Pattern = re.compile(rf"(?:({SUBDOMAIN_REGEX.pattern})\.)?{re.escape(HOSTNAME)}")
 HOLD_TIMEOUT: int = 25
 
 class MCProxy(BaseUnit):
@@ -35,7 +35,7 @@ class MCProxy(BaseUnit):
         self.backends = backends
         self.proxy_server: asyncio.Server
 
-        self.log = PrefixLoggerAdapter(logger, self.name)
+        self.log = PrefixLoggerAdapter(logger, {"proxy": self.name})
 
     @property
     def name(self):
@@ -46,7 +46,7 @@ class MCProxy(BaseUnit):
         return self.listing.port
 
     async def _start(self):
-        self.log.debug("Starting proxy server on port %s", self.port)
+        self.log.info("Starting proxy server on port %s", self.port)
         self.proxy_server = await asyncio.start_server(self._handle_client, "0.0.0.0", self.port)
         await self.proxy_server.__aenter__()
 
@@ -72,7 +72,7 @@ class MCProxy(BaseUnit):
                 is_legacy_ping = True
                 conn_logger.debug("Received legacy ping: %s", handshake)
                 server_address = handshake["hostname"]
-                if m := HOSTNAME_REGEX.match(server_address):
+                if m := HOSTNAME_REGEX.fullmatch(server_address):
                     subdomain = m.group(1) or ""
                     conn_logger.debug("Identified subdomain: \"%s\"", subdomain)
                     if subdomain in self.listing.subdomains:
@@ -221,11 +221,7 @@ class MCProxy(BaseUnit):
             if player_joining:
                 backend.incr_online_players()
             try:
-                async def forward(initial_data, src_reader, dst_writer, direction_msg=None):
-                    if direction_msg:
-                        forwarding_logger = PrefixLoggerAdapter(direction_msg) | conn_logger
-                    else:
-                        forwarding_logger = conn_logger
+                async def forward(initial_data, src_reader, dst_writer, direction_msg):
                     try:
                         if len(initial_data) > 0:
                             dst_writer.write(initial_data)
@@ -233,7 +229,7 @@ class MCProxy(BaseUnit):
                         while True:
                             data = await src_reader.read(PacketReader.DEFAULT_BUFFER_SIZE)
                             if not data:
-                                forwarding_logger.debug("Connection closed")
+                                conn_logger.debug("[%s] Connection closed", direction_msg)
                                 break
                             dst_writer.write(data)
                             await dst_writer.drain()
@@ -255,7 +251,7 @@ class MCProxy(BaseUnit):
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
             ip, port = writer.get_extra_info("peername")
-            conn_logger = PrefixLoggerAdapter(f"{ip}:{port}") | self.log
+            conn_logger = PrefixLoggerAdapter(self.log, {"ip": ip, "port": port})
             conn_logger.debug("Client connected")
 
             packet_reader = PacketReader(reader, timeout=30)
@@ -268,7 +264,7 @@ class MCProxy(BaseUnit):
                     if player_joining:
                         # Set server running if it isn't already
                         if not backend.mcproc_starting():
-                            conn_logger.info("Starting backend server %s", backend.name)
+                            conn_logger.debug("Starting backend server %s", backend.name)
                             backend.start_mcproc()
 
                         # Keep client connected until server starts (or fails to start)

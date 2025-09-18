@@ -20,13 +20,14 @@ class MCStatusChecker(Timer):
 
     def __init__(
         self,
+        server_name: str,
         aping_client_factory: AsyncPINGClientFactory,
-        logger: logging.Logger | logging.LoggerAdapter | None=None,
     ):
-        super().__init__(self.INTERVAL)
-        self.log = PrefixLoggerAdapter(logger, "status_checker")
+        self.server_name = server_name
         self.aping_client_factory: AsyncPINGClientFactory = aping_client_factory
         self.server_list_ping_cb = None
+        self.log = PrefixLoggerAdapter(logger, {"server": server_name})
+        super().__init__(self.INTERVAL)
 
     def on_server_list_ping(self, cb):
         self.server_list_ping_cb = cb

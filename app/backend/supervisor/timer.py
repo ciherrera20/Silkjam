@@ -9,7 +9,6 @@ import logging
 from .base_unit import BaseUnit
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.WARNING)
 
 class Timer(BaseUnit):
     def __init__(self, timeout):
