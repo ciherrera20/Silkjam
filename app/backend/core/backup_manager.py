@@ -48,6 +48,7 @@ class MCBackupManager(Timer):
 
     async def _start(self):
         await super()._start()
+        self.check_nowait()  # Schedule status check immediately
 
     async def _stop(self, *args):
         await super()._stop(*args)
@@ -176,6 +177,10 @@ class MCBackupManager(Timer):
 
     async def run(self):
         while True:
+            # Sleep until next backup check
+            self.log.debug("Next backup check scheduled in %ss", self.remaining)
+            await super().run()
+
             self.log.debug("Checking if backup is needed")
             backups = self.load_backups_list()
 
@@ -201,9 +206,9 @@ class MCBackupManager(Timer):
             # Remove any stale backups
             self.remove_stale_backups(backups, total_ticks)
 
-            # Sleep until next backup check
-            self.log.debug("Next backup check scheduled in %ss", self.remaining)
-            await super().run()
+    def check_nowait(self):
+        self.log.debug("Backup check requested immediately, setting remaining time to 0")
+        self.remaining = 0
 
     def __repr__(self):
         return "MCBackupManager"

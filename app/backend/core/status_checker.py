@@ -16,7 +16,7 @@ type AsyncPINGClientFactory = callable[[], AbstractContextManager[AsyncPINGClien
 class MCStatusChecker(Timer):
     MAX_RETRIES = 3
     RETRY_INTERVAL = 10
-    INTERVAL = 60
+    INTERVAL = 1
 
     def __init__(
         self,
@@ -32,15 +32,16 @@ class MCStatusChecker(Timer):
         self.server_list_ping_cb = cb
 
     async def _start(self):
-        pass
+        await super()._start()
+        self.check_nowait()  # Schedule status check immediately
 
     async def _stop(self, *args):
-        pass
+        await super()._stop(*args)
 
     async def run(self):
         retry_count = 0
         while True:
-            await self.run()
+            await super().run()
             try:
                 async with self.aping_client_factory() as client:
                     stats = await client.get_stats()
@@ -58,6 +59,10 @@ class MCStatusChecker(Timer):
                 self.reset()
                 if self.server_list_ping_cb is not None:
                     self.server_list_ping_cb(stats)
+
+    def check_nowait(self):
+        self.log.debug("Status check requested immediately, setting remaining time to 0")
+        self.remaining = 0
 
     def __repr__(self):
         return "MCStatusChecker"

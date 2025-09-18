@@ -47,7 +47,7 @@ class MCBackend(Supervisor):
         self.stop_timeout: int = stop_timeout
         self.sigint_timeout: int = sigint_timeout
         self.sigterm_timeout: int = sigterm_timeout
-        self.log = PrefixLoggerAdapter(logger, listing.name)
+        self.log = PrefixLoggerAdapter(logger, self.listing.name)
 
         self.properties = ServerProperties.load(self.root / "server.properties")
         self.icon = None
@@ -327,17 +327,28 @@ class MCBackend(Supervisor):
             if self._online_player_change in done_events:
                 self.log.debug("Online players is %s", self.online_players)
                 if self.online_players == 0:
-                    self.log.debug("Starting sleep timer")
-                    self.sleep_timer.timeout = self.listing.sleep_properties.timeout
-                    self.sleep_timer.reset()
+                    if self.is_stopped(self.sleep_timer):
+                        # The timer expired and triggered a status check, which confirmed that no players are connected
+                        self.log.info("No players connected for %ss, stopping server", self.listing.sleep_properties.timeout)
+                        self.supervisor.stop_unit_nowait(self)
+                    elif self.sleep_timer.timeout is None:
+                        # Reset sleep timer if it is suspended
+                        self.log.debug("Setting sleep timer for %ss", self.listing.sleep_properties.timeout)
+                        self.sleep_timer.timeout = self.listing.sleep_properties.timeout
+                        self.sleep_timer.reset()
+                    else:
+                        self.log.debug("Server will stop in %ss if no players join", self.sleep_timer.remaining)
                 else:
-                    self.log.debug("Stopping sleep timer")
-                    self.sleep_timer.timeout = None
+                    if self.is_stopped(self.sleep_timer):
+                        # The timer expired and triggered a status check, which found that there are still players online
+                        self.start_unit_nowait(self.sleep_timer)
+                    if self.sleep_timer.timeout is not None:
+                        self.log.debug("Suspending sleep timer")
+                        self.sleep_timer.timeout = None
                 self._online_player_change.clear()
             if self.sleep_timer in done_units:
-                # TODO: add back check here for online players == 0 by setting status_checker remaining = 0, and allowing supervisor to accumulate done units
-                self.log.info("No players connected for %ss, stopping server", self.listing.sleep_properties.timeout)
-                self.supervisor.stop_unit_nowait(self)
+                # Trigger a status check to determine the number of players online
+                self.status_checker.check_nowait()
             if self.status_checker in done_units:
                 err = done_units[self.status_checker]
                 raise RuntimeError("Server stopped responding") from err

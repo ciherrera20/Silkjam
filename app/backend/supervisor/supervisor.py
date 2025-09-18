@@ -20,6 +20,12 @@ class Status(IntEnum):
     EXITING = 3
     STOPPED = 4
 
+    def __repr__(self):
+        return f"{self.__class__.__name__}.{self.name}"
+
+    def __str__(self):
+        return self.name
+
 class Supervisor(BaseUnit):
     """Manages the lifecycle of asynchronous units.
 
@@ -224,7 +230,7 @@ class Supervisor(BaseUnit):
 
             # Cleanup state
             state.done_exiting.set()
-            state.status = Status.STOPPED if state.pending_stop else Status.READY
+            state.status = Status.STOPPED if state.pending_stop or not state.restart else Status.READY
             state.pending_stop = state.force_pending_stop = False
             if not self._lock.locked():
                 del self._running_unit_tasks[state.task]
@@ -348,6 +354,7 @@ class Supervisor(BaseUnit):
             """
             # Set up return values
             done_events = set()
+            # done_units = {unit: state.result for unit, state in self._units.items() if unit not in self._running_unit_tasks}  # Unit -> exception?
             done_units = {}  # Unit -> exception?
             pending_events = set(event for event in events)
             pending_units = set(unit for unit in self._running_unit_tasks.values())
@@ -390,7 +397,7 @@ class Supervisor(BaseUnit):
                             pending_units.discard(unit)
                             if unit in self._units:
                                 state = self._units[unit]
-                                self.log.info("%s is done with status %s", unit, state.status.name)
+                                self.log.info("%s is done with status %s", unit, state.status)
                                 state.task = None
                             del self._running_unit_tasks[t]
 
@@ -779,7 +786,7 @@ class Supervisor(BaseUnit):
         """
         if unit not in self._units:
             return None
-        return self._units[unit].status == Status.STOPPED
+        return self._units[unit].status == Status.READY
 
     def is_starting(
             self,
