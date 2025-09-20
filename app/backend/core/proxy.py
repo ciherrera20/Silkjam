@@ -25,6 +25,8 @@ HOSTNAME_REGEX: re.Pattern = re.compile(rf"(?:({SUBDOMAIN_REGEX.pattern})\.)?{re
 HOLD_TIMEOUT: int = 25
 
 class MCProxy(BaseUnit):
+    BUFFER_SIZE = 1 << 16  # 64 KiB
+
     def __init__(
             self,
             backends: dict[str, MCBackend],
@@ -221,18 +223,20 @@ class MCProxy(BaseUnit):
             if player_joining:
                 backend.incr_online_players()
             try:
-                async def forward(initial_data, src_reader, dst_writer, direction_msg):
+                async def forward(
+                        initial_data: bytes,
+                        src_reader: asyncio.StreamReader,
+                        dst_writer: asyncio.StreamWriter,
+                        direction_msg: str
+                    ):
                     try:
                         if len(initial_data) > 0:
                             dst_writer.write(initial_data)
                             await dst_writer.drain()
-                        while True:
-                            data = await src_reader.read(PacketReader.DEFAULT_BUFFER_SIZE)
-                            if not data:
-                                conn_logger.debug("[%s] Connection closed", direction_msg)
-                                break
+                        while data := await src_reader.read(MCProxy.BUFFER_SIZE):
                             dst_writer.write(data)
                             await dst_writer.drain()
+                            conn_logger.debug("[%s] Connection closed", direction_msg)
                     finally:
                         dst_writer.close()
 
