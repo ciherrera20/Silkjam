@@ -26,7 +26,6 @@ class Version(BaseModel):
 UNKNOWN_VERSION = Version(name="unknown", protocol=0)
 
 class ServerListing(BaseModel):
-    name: str
     version: Version = UNKNOWN_VERSION
     sleep_properties: SleepProperties = SleepProperties()
     backup_properties: BackupProperties = BackupProperties(

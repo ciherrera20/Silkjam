@@ -29,6 +29,7 @@ class MCBackend(Supervisor):
 
     def __init__(
         self,
+        name: str,
         root: Path,
         port_factory: PortCMFactory,
         listing: ServerListing,
@@ -38,6 +39,7 @@ class MCBackend(Supervisor):
         sigterm_timeout: int=90
     ):
         super().__init__()
+        self.name = name
         self.root: Path = root
         self.port_factory: PortCMFactory = port_factory
         self.listing: ServerListing = listing
@@ -45,7 +47,7 @@ class MCBackend(Supervisor):
         self.stop_timeout: int = stop_timeout
         self.sigint_timeout: int = sigint_timeout
         self.sigterm_timeout: int = sigterm_timeout
-        self.log = PrefixLoggerAdapter(logger, {"server": self.listing.name})
+        self.log = PrefixLoggerAdapter(logger, {"server": self.name})
 
         self.properties = ServerProperties.load(self.root / "server.properties")
         self.icon = None
@@ -78,10 +80,6 @@ class MCBackend(Supervisor):
         self._online_player_change.set()
 
         self.listing_change_cb = None
-
-    @property
-    def name(self):
-        return self.listing.name
 
     @property
     def version(self):

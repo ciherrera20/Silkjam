@@ -29,19 +29,17 @@ class MCProxy(BaseUnit):
 
     def __init__(
             self,
+            name: str,
             backends: dict[str, MCBackend],
             listing: ProxyListing
         ):
         super().__init__()
+        self.name = name
         self.listing = listing
         self.backends = backends
         self.proxy_server: asyncio.Server
 
         self.log = PrefixLoggerAdapter(logger, {"proxy": self.name})
-
-    @property
-    def name(self):
-        return self.listing.name
 
     @property
     def port(self):

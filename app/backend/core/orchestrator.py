@@ -79,8 +79,7 @@ class MCOrchestrator(Supervisor):
     def reload_config(self):
         # Start proxies in the listing that are not currently running
         proxy_listing_names = set()
-        for listing in self.config.proxy_listing:
-            name = listing.name
+        for name, listing in self.config.proxy_listing.items():
             proxy_listing_names.add(name)
             if name not in self.proxies:
                 logger.info("Found proxy listing entry %s", name)
@@ -91,7 +90,7 @@ class MCOrchestrator(Supervisor):
                 elif not listing.enabled:
                     logger.info("Skipping disabled proxy listing entry %s", name)
                 else:
-                    proxy = MCProxy(self.backends, listing)
+                    proxy = MCProxy(name, self.backends, listing)
                     self.proxies[name] = proxy
                     self.add_unit(proxy)
 
@@ -106,8 +105,7 @@ class MCOrchestrator(Supervisor):
 
         # Start servers in the listing that are not currently running
         backend_names = set()
-        for listing in self.config.server_listing:
-            name = listing.name
+        for name, listing in self.config.server_listing.items():
             backend_names.add(name)
             if name not in self.backends:
                 logger.info("Found server listing entry %s", name)
@@ -119,6 +117,7 @@ class MCOrchestrator(Supervisor):
                     logger.info("Skipping disabled server listing entry %s", name)
                 else:
                     backend = MCBackend(
+                        name,
                         self.root / "servers" / name,
                         self.acquire_port,
                         listing,

@@ -27,7 +27,7 @@ class ServerProperties(BaseModel):
         if path.stat().st_size > 0:
             props = jproperties.Properties()
             props.load(path.read_text())
-            config = cls(**{k: v.data for k, v in props.items()})
+            config = cls.model_validate({k: v.data for k, v in props.items()}, by_alias=True)
         else:
             config = cls.default()
             config.dump(path)
