@@ -236,7 +236,7 @@ class MCProxy(BaseUnit):
                         while data := await src_reader.read(MCProxy.BUFFER_SIZE):
                             dst_writer.write(data)
                             await dst_writer.drain()
-                            conn_logger.debug("[%s] Connection closed", direction_msg)
+                        conn_logger.debug("[%s] Connection closed", direction_msg)
                     finally:
                         dst_writer.close()
 
