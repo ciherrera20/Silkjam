@@ -5,7 +5,7 @@ import asyncio
 import jsondiff
 import websockets
 from pathlib import Path
-from fastapi import FastAPI, APIRouter, Depends, Request, HTTPException
+from fastapi import FastAPI, APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 import logging
@@ -119,7 +119,7 @@ async def auth_static_path(
                 # Check that request is for dynmap file
                 if path.is_relative_to(STATIC_ROOT / "servers" / server_name / "dynmap" / "web"):
                     return
-    logger.debug("Forbidding path %s", path)
+    logger.debug("Forbidding path %s", relpath)
     raise HTTPException(status_code=403)
 
 app.include_router(v1_router)
