@@ -36,21 +36,44 @@ minecraft-orchestrator/
 ```
 
 # TODOs
-- Figure out how to create a less privileged user per backend server and start the server processes as that user
-- Figure out how to limit resources per server, and how to monitor resource usage (CPU, memory, disk usage, maybe network?)
-- Figure out how to distinguish restartable errors vs not restartable errors in MCBackend and MCProc
-- Add per-unit force stop setting when exiting to supervisor
-- Add capability to backup to remote drive
-- Figure out why when spamming connect as the server starts, all future connects just show Server disconnected message
+- Backend
+    - Organize FastAPI backends: https://fastapi.tiangolo.com/tutorial/bigger-applications/#include-an-apirouter-in-another
+    - Add ferium mod manager and server version upgrading
+    - Create API endpoints
+        - Endpoint to create/delete proxy
+        - Endpoint to create/delete server
+        - Endpoint to upload/download world
+        - Endpoint to enable/disable proxies/servers
+    - Create web ui
+    - Use watchfiles to watch for changes in config file and apply them
+        - Not sure the best way to implement config changes. Some require server restarts, some don't
+    - Enforce IP bans per backend in proxy
+    - Figure out how to create a less privileged user per backend server and start the server processes as that user
+    - Figure out how to limit resources per server, and how to monitor resource usage (CPU, memory, disk usage, maybe network?)
+    - Add per-unit force stop setting when exiting to supervisor
+    - Add semaphore for initializing server processes to avoid overwhelming the machine
+        - Add config option for the number of concurrent server starts
+        - Maybe not necessary?
+    - Add cooldown between backend server restarts?
+    - Look into using Pydanic to validate protocol packets and possibly Construct to ease parsing them
+    - Add EULA param to config
+    - Add logging for all IPs trying to ping the server
+    - Move backups into server folder and change current backup folder into a remote sync
+    - Use subauth requests in nginx to serve static files, including dynmap files
+- Frontend:
+    - Set up React
 - Still not happy with overall organization. Move docker stuff and env stuff back out into project root. Also, think about portability of project_environment
-- Add queue for initializing server processes to avoid overwhelming the machine
-    - Add config option for the number of concurrent server starts
-    - Maybe not necessary?
-- Add cooldown between backend server restarts?
 
 # IN PROGRESS
 
 # DONE
+- [DONE] Add automatic backups
+    - [DONE] Local backups for now, can add cloud sync with rclone later
+    - [DONE] Add retry on "file changed as we read it"
+    - [DONE] Catch fatal errors and retry after some time
+- [DONE] Separate background process to ping server status into its own unit
+    - [DONE] Add one last check for player count before setting server status to sleep
+- [DONE] Add nginx reverse proxy
 - [DONE] Add background task to constantly ping server process and read the number of players connected, as well as the protocol version
 - [DONE] Use Pydantic for reading and writing config and server properties
 - [DONE] Create server.properties if it doesn't exist
