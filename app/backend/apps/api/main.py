@@ -5,7 +5,8 @@ import asyncio
 import jsondiff
 import websockets
 from pathlib import Path
-from fastapi import FastAPI, APIRouter, Depends, HTTPException
+from typing import Annotated
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Header
 from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 import logging
@@ -97,14 +98,14 @@ async def docs_redirect():
 # v1 router
 v1_router = APIRouter(prefix="/v1", tags=["v1"])
 
-@v1_router.get("/auth/static/{path:path}", status_code=204)
+@v1_router.get("/auth/static", status_code=204)
 async def auth_static_path(
-    path: str,
+    x_filepath: Annotated[str, Header()],
     config: Config=Depends(get_config),
     config_lock: asyncio.Lock=Depends(get_config_lock)
 ):
     # Make sure path isn't going outside the root path
-    relpath: Path = Path(os.path.relpath(path, "."))
+    relpath: Path = Path(os.path.relpath(x_filepath, "."))
     if relpath.parts[0] == "..":
         logger.debug("Rejected path %s because it tried to leave root directory", relpath)
         raise HTTPException(status_code=403)
