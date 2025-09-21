@@ -7,16 +7,19 @@ services:
     image: silkjam:latest
     container_name: silkjam
     ports:
-      - 80:80  # Expose frontend
+      - 443:443  # Expose frontend
       - 8500:8000  # Expose backend
       - ${MINECRAFT_PORT:-25565}:25565  # Expose Minecraft port
     volumes:
       - ${DATA_VOLUME:-data}:/app/data
+      - ${CADDY_VOLUME:-caddy}:/etc/caddy/share
     environment:
       - MINECRAFT_PORT=${MINECRAFT_PORT-25565}
       - DEBUG=${DEBUG:-false}
       - HOSTNAME=${HOSTNAME:-localhost}  # Domain name
       - SERVER_PORTS=${SERVER_PORTS-40000:45000}  # Server port range used internally
+      - XDG_DATA_HOME=/etc/caddy/share/data
+      - XDG_CONFIG_HOME=/etc/caddy/share/config
     restart: unless-stopped
     stop_grace_period: 90s  # allow time for minecraft servers to stop before killing them
     logging:
@@ -26,3 +29,4 @@ services:
         max-file: "3"     # keep 3 rotated files
 volumes:
   data:
+  caddy:

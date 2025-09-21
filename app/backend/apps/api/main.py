@@ -105,9 +105,9 @@ async def auth_static_path(
     config_lock: asyncio.Lock=Depends(get_config_lock)
 ):
     # Make sure path isn't going outside the root path
-    relpath: Path = Path(os.path.relpath(x_filepath, "."))
+    relpath: Path = Path(os.path.join("/", x_filepath)[1:])
     if relpath.parts[0] == "..":
-        logger.debug("Rejected path %s because it tried to leave root directory", relpath)
+        logger.debug("Rejected path %s (%s) because it tried to leave the root directory", relpath, x_filepath)
         raise HTTPException(status_code=403)
 
     path: Path = STATIC_ROOT / relpath
@@ -120,7 +120,7 @@ async def auth_static_path(
                 # Check that request is for dynmap file
                 if path.is_relative_to(STATIC_ROOT / "servers" / server_name / "dynmap" / "web"):
                     return
-    logger.debug("Forbidding path %s", relpath)
+    logger.debug("Forbidding path %s (%s)", relpath, x_filepath)
     raise HTTPException(status_code=403)
 
 app.include_router(v1_router)
