@@ -30,7 +30,6 @@ logging.basicConfig(
 )
 logging.getLogger("asyncio").setLevel(logging.WARNING)
 logging.getLogger("websockets").setLevel(logging.WARNING)
-# logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 class LogFilter(logging.Filter):
     def filter(self, record):
@@ -110,17 +109,17 @@ async def auth_static_path(
         logger.debug("Rejected path %s because it tried to leave root directory", relpath)
         raise HTTPException(status_code=403)
 
-    path = STATIC_ROOT / relpath
-    if STATIC_ROOT / "servers" < path:
+    path: Path = STATIC_ROOT / relpath
+    if path.is_relative_to(STATIC_ROOT / "servers"):
         server_name = path.parts[len(STATIC_ROOT.parts) + 1]
 
         async with config_lock:
             # Check server exists and is enabled
             if server_name in config.server_listing and config.server_listing[server_name].enabled:
                 # Check that request is for dynmap file
-                if STATIC_ROOT / "servers" / server_name / "dynmap" / "web" < path:
+                if path.is_relative_to(STATIC_ROOT / "servers" / server_name / "dynmap" / "web"):
                     return
-    logger.debug("Forbidden path %s", relpath)
+    logger.debug("Forbidding path %s", path)
     raise HTTPException(status_code=403)
 
 app.include_router(v1_router)
