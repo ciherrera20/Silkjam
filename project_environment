@@ -9,13 +9,15 @@ dc() {
 install() {
     export DEBUG=false
     export DATA_VOLUME=data
+    export CADDY_VOLUME=caddy
     dc stop silkjam
     dc build
     dc --env-file env/.env up -d
 }
 
 run() {
-    export DATA_VOLUME="$PROJECT_ROOT/data"
+    export DATA_VOLUME="$PROJECT_ROOT/volumes/data"
+    export CADDY_VOLUME="$PROJECT_ROOT/volumes/caddy"
     if [ "$1" = "--debug" ]; then
         export DEBUG=true
     else

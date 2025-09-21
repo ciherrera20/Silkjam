@@ -1,0 +1,36 @@
+{$HOSTNAME} {
+    # -----------------------------
+    # Serve frontend SPA
+    # -----------------------------
+    file_server {
+        root /app/frontend
+        index index.html
+    }
+
+    # -----------------------------
+    # Reverse proxy for API
+    # -----------------------------
+    reverse_proxy /api/* http://localhost:8000
+
+    # -----------------------------
+    # Serve static files with auth
+    # -----------------------------
+    handle_path /static/* {
+        forward_auth http://localhost:8000 {
+            uri /api/v1/auth/static
+            header_up X-Filepath {path}
+        }
+        file_server {
+            root /app/data
+        }
+    }
+
+    # -----------------------------
+    # Dynmap viewer for each server
+    # -----------------------------
+    @map_redirect path_regexp map_redirect "^/(?<server>.*?)/map/?$"
+    redir @map_redirect /{re.map_redirect.server}/map/index.html 302
+
+    @map_rewrite path_regexp map_rewrite "^/(?<server>.*?)/map/(?<path>.*)$"
+    rewrite @map_rewrite /static/servers/{re.map_rewrite.server}/dynmap/web/{re.map_rewrite.path}
+}
