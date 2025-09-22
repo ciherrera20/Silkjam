@@ -125,7 +125,7 @@ class MCOrchestrator(Supervisor):
                     )
                     backend.on_listing_change(self.update_config)
                     self.backends[name] = backend
-                    self.add_unit(backend, stopped=listing.sleep_properties.timeout is not None and listing.version != UNKNOWN_VERSION)
+                    self.add_unit(backend, restart=False, stopped=listing.sleep_properties.timeout is not None and listing.version != UNKNOWN_VERSION)
 
         # Cleanup any servers in the listing that no longer exist
         removed_backend_names = set()
