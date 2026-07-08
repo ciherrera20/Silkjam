@@ -20,8 +20,8 @@ from models import ProxyListing, SUBDOMAIN_REGEX
 
 logger = logging.getLogger(__name__)
 
-HOSTNAME: str = os.environ["HOSTNAME"]
-HOSTNAME_REGEX: re.Pattern = re.compile(rf"(?:({SUBDOMAIN_REGEX.pattern})\.)?{re.escape(HOSTNAME)}")
+DOMAIN: str = os.environ["DOMAIN"]
+DOMAIN_REGEX: re.Pattern = re.compile(rf"(?:({SUBDOMAIN_REGEX.pattern})\.)?{re.escape(DOMAIN)}")
 HOLD_TIMEOUT: int = 25
 
 class MCProxy(BaseUnit):
@@ -71,8 +71,8 @@ class MCProxy(BaseUnit):
                 handshake = await packet_reader.read_legacy_ping()
                 is_legacy_ping = True
                 conn_logger.debug("Received legacy ping: %s", handshake)
-                server_address = handshake["hostname"]
-                if m := HOSTNAME_REGEX.fullmatch(server_address):
+                server_address = handshake["DOMAIN"]
+                if m := DOMAIN_REGEX.fullmatch(server_address):
                     subdomain = m.group(1) or ""
                     conn_logger.debug("Identified subdomain: \"%s\"", subdomain)
                     if subdomain in self.listing.subdomains:
@@ -95,7 +95,7 @@ class MCProxy(BaseUnit):
                     is_legacy_ping = False
                     conn_logger.debug("Received handshake: %s", handshake)
                     server_address = handshake["server_address"]
-                    if m := HOSTNAME_REGEX.match(server_address):
+                    if m := DOMAIN_REGEX.match(server_address):
                         subdomain = m.group(1) or ""
                         conn_logger.debug("Identified subdomain: \"%s\"", subdomain)
                         if subdomain in self.listing.subdomains:

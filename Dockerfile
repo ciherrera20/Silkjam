@@ -1,16 +1,16 @@
-# Use Python 3.12 slim image
-FROM python:3.12-slim
+# Use Python 3.14 slim image
+FROM python:3.14-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install OS dependencies, including Java 21 JRE
+# Install OS dependencies, including Java 25 JRE
 RUN apt-get update &&  apt-get install -y \
     curl \
     bash \
     xz-utils \
     procps \
-    openjdk-21-jre-headless \
+    openjdk-25-jre-headless \
     supervisor \
     debian-keyring \
     debian-archive-keyring \
@@ -22,40 +22,41 @@ RUN curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --de
     && chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
     && chmod o+r /etc/apt/sources.list.d/caddy-stable.list \
     && apt-get update \
-    && apt-get install caddy
+    && apt-get install caddy \
+    && rm -rf /var/lib/apt/lists/*
 
-# Remove apt lists
-RUN rm -rf /var/lib/apt/lists/*
+# Create application user
+# UID/GID are adjusted at runtime by entrypoint.sh
+RUN groupadd --gid 1000 silkjam \
+    && useradd --uid 1000 --gid 1000 --create-home silkjam
 
-# Set JAVA_HOME (useful for Minecraft scripts)
-ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+# Java configuration
+ENV JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64
 ENV PATH="$JAVA_HOME/bin:$PATH"
 
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 # Install Python dependencies
-COPY requirements.txt /
-RUN pip install --no-cache-dir -r /requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+ENV PATH="/app/.venv/bin:$PATH"
 
-# Copy backend
+# Copy application
 COPY ./app/backend ./backend
-
-# Copy frontend (index.html)
 COPY ./app/frontend/index.html ./frontend/index.html
 
-# Copy Caddy config
+# Copy configs
 COPY ./app/Caddyfile /etc/caddy/Caddyfile
-
-# Copy supervisord config
 COPY ./app/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY ./app/entrypoint.sh /entrypoint.sh
 
-# Expose Caddy port
+RUN chmod +x /entrypoint.sh
+
 EXPOSE 443
-
-# Expose FastAPI port
 EXPOSE 8000
-
-# Expose minecraft port
 EXPOSE 25565
 
-# Run with Uvicorn
 ENV PYTHONUNBUFFERED=1
-CMD ["/usr/bin/supervisord"]
+
+ENTRYPOINT ["/entrypoint.sh"]

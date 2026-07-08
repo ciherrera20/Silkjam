@@ -2,24 +2,27 @@ name: silkjam
 services:
   silkjam:
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: Dockerfile
     image: silkjam:latest
     container_name: silkjam
     ports:
-      - 443:443  # Expose frontend
-      - 8500:8000  # Expose backend
-      - ${MINECRAFT_PORT:-25565}:25565  # Expose Minecraft port
+      - "443:443"
+      - "${API_PORT:-8500}:8000"
+      - "${MINECRAFT_PORT:-25565}:25565"
     volumes:
       - ${DATA_VOLUME:-data}:/app/data
       - ${CADDY_VOLUME:-caddy}:/etc/caddy/share
     environment:
-      - MINECRAFT_PORT=${MINECRAFT_PORT-25565}
-      - DEBUG=${DEBUG:-false}
-      - HOSTNAME=${HOSTNAME:-localhost}  # Domain name
-      - SERVER_PORTS=${SERVER_PORTS-40000:45000}  # Server port range used internally
-      - XDG_DATA_HOME=/etc/caddy/share/data
-      - XDG_CONFIG_HOME=/etc/caddy/share/config
+      MINECRAFT_PORT: "${MINECRAFT_PORT:-25565}"
+      DEBUG: "${DEBUG:-false}"
+      DOMAIN: "${DOMAIN:-localhost}"  # Domain name
+      SERVER_PORTS: "${SERVER_PORTS:-40000:45000}"  # Server port range used internally
+      XDG_DATA_HOME: /etc/caddy/share/data
+      XDG_CONFIG_HOME: /etc/caddy/share/config
+      PUID: "${PUID:-1001}"
+      PGID: "${PGID:-1001}"
+    cap_add:
+      - NET_BIND_SERVICE
     restart: unless-stopped
     stop_grace_period: 90s  # allow time for minecraft servers to stop before killing them
     logging:
