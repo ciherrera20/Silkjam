@@ -57,7 +57,7 @@ class MCBackupManager(Timer):
     def load_play_time(self):
         # Read play time from level.dat
         nbtfile = nbtlib.load(self.root / "world" / "level.dat")
-        return int(nbtfile.root["Data"]["Time"])
+        return int(nbtfile["Data"]["Time"])
 
     def load_backups_list(self) -> list[tuple[int, Path]]:
         # Grab current backups from backup directory
