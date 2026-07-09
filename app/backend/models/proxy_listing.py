@@ -12,9 +12,9 @@ class ProxyListing(BaseModel):
     _errors: list[str] = PrivateAttr(default_factory=list)
 
     @property
-    def valid(self):
+    def valid(self) -> bool:
         return len(self._errors) == 0
 
     @property
-    def errors(self):
+    def errors(self) -> list[str]:
         return self._errors

@@ -10,7 +10,7 @@ class BackupStrategy(str, enum.Enum):
     EXPONENTIAL = "exponential"
     FIXED = "fixed"
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.value
 
 class BackupProperties(BaseModel):
@@ -40,9 +40,9 @@ class ServerListing(BaseModel):
     _errors: list[str] = PrivateAttr(default_factory=list)
 
     @property
-    def valid(self):
+    def valid(self) -> bool:
         return len(self._errors) == 0
 
     @property
-    def errors(self):
+    def errors(self) -> list[str]:
         return self._errors

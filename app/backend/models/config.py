@@ -4,15 +4,16 @@ from pathlib import Path
 from pydantic import BaseModel, model_validator
 from .proxy_listing import ProxyListing
 from .server_listing import ServerListing
+from typing import Self
 
-SUBDOMAIN_REGEX: re.Pattern = re.compile(r"(?:(?!-)[a-zA-Z0-9\-]+\.)*?(?!-)[a-zA-Z0-9\-]+")
+SUBDOMAIN_REGEX: re.Pattern[str] = re.compile(r"(?:(?!-)[a-zA-Z0-9\-]+\.)*?(?!-)[a-zA-Z0-9\-]+")
 
 class Config(BaseModel):
     proxy_listing: dict[str, ProxyListing]
     server_listing: dict[str, ServerListing]
 
     @model_validator(mode="after")
-    def validate_semantics(self):
+    def validate_semantics(self) -> Self:
         proxy_ports = set()
         for listing in self.proxy_listing.values():
             if listing.port in proxy_ports:
@@ -27,7 +28,7 @@ class Config(BaseModel):
         return self
 
     @classmethod
-    def default(cls):
+    def default(cls) -> Self:
         return cls(
             proxy_listing={"proxy1": ProxyListing(
                 port=25565,
@@ -38,7 +39,7 @@ class Config(BaseModel):
         )
 
     @classmethod
-    def load(cls, path: Path):
+    def load(cls, path: Path) -> Self:
         path.touch(exist_ok=True)
         if path.stat().st_size > 0:
             config = cls.model_validate(json.loads(path.read_text()), by_alias=True)
@@ -47,5 +48,5 @@ class Config(BaseModel):
             config.dump(path)
         return config
 
-    def dump(self, path: Path):
+    def dump(self, path: Path) -> None:
         path.write_text(self.model_dump_json(indent=4, by_alias=True))
