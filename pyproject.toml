@@ -7,7 +7,6 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "psutil",
-    "jproperties",
     "mctools",
     "nbtlib",
     "jsondiff",
@@ -34,3 +33,4 @@ strict = true
 warn_unused_configs = true
 show_error_codes = true
 pretty = true
+mypy_path = ["stubs"]
