@@ -63,8 +63,6 @@ class ServerProperties(BaseModel):
     rcon_password: str | None = Field(alias="rcon.password")
     enable_rcon: bool = Field(alias="enable-rcon")
 
-    _layout: list[ServerPropertiesLine] = PrivateAttr(default_factory=list)
-
     @classmethod
     def default(cls) -> Self:
         return cls.model_construct(
@@ -84,9 +82,8 @@ class ServerProperties(BaseModel):
         path.touch(exist_ok=True)
 
         if path.stat().st_size > 0:
-            props, layout = parse_properties(path)
+            props, _ = parse_properties(path)
             config = cls.model_validate(props, by_alias=True)
-            config._layout = layout
         else:
             config = cls.default()
             config.dump(path)
@@ -104,16 +101,17 @@ class ServerProperties(BaseModel):
             )
             for key, value in self.model_dump(by_alias=True).items()
         }
+        _, layout = parse_properties(path)
 
         seen: set[str] = set()
 
         with path.open("w", encoding="utf-8", newline="\n") as f:
-            for line in self._layout:
+            for line in layout:
                 if line.key is None:
                     f.write(line.value + "\n")
                     continue
 
-                value = values[line.key]
+                value = values.get(line.key, line.value)
                 f.write(f"{line.key}={value}\n")
                 seen.add(line.key)
 
