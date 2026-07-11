@@ -1,0 +1,3 @@
+from typing import Any
+
+def patch(a: dict[str, Any], d: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]: ...
