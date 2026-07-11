@@ -1,5 +1,5 @@
 from types import TracebackType
-from typing import Self
+from typing import Literal, Self
 from contextlib import AbstractAsyncContextManager
 from abc import ABC, abstractmethod
 
@@ -42,7 +42,7 @@ class BaseUnit(AbstractAsyncContextManager['BaseUnit'], ABC):
             await self._start()
         return self
 
-    async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> bool:
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> Literal[False]:
         if self._started:
             self._started = False
             await self._stop(exc_type, exc_val, exc_tb)

@@ -2,8 +2,8 @@ import re
 import json
 from pathlib import Path
 from pydantic import BaseModel, model_validator
-from .proxy_listing import ProxyListing
-from .server_listing import ServerListing
+from backend.models.proxy_listing import ProxyListing
+from backend.models.server_listing import ServerListing
 from typing import Self
 
 SUBDOMAIN_REGEX: re.Pattern[str] = re.compile(r"(?:(?!-)[a-zA-Z0-9\-]+\.)*?(?!-)[a-zA-Z0-9\-]+")
@@ -12,9 +12,12 @@ class Config(BaseModel):
     proxy_listing: dict[str, ProxyListing]
     server_listing: dict[str, ServerListing]
 
-    @model_validator(mode="after")
     def validate_semantics(self) -> Self:
-        proxy_ports = set()
+        # Important: repeated calls must not accumulate old errors
+        for listing in self.proxy_listing.values():
+            listing.errors.clear()
+
+        proxy_ports: set[int] = set()
         for listing in self.proxy_listing.values():
             if listing.port in proxy_ports:
                 listing.errors.append(f"Proxy port \"{listing.port}\" is already taken")
@@ -25,6 +28,11 @@ class Config(BaseModel):
                     listing.errors.append(f"Proxy subdomain \"{subdomain}\" routes to non-existent server \"{server_name}\"")
             if listing.valid:
                 proxy_ports.add(listing.port)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_semantics_on_model_creation(self) -> Self:
+        self.validate_semantics()
         return self
 
     @classmethod

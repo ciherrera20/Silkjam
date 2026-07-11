@@ -5,36 +5,36 @@ if __name__ == "__main__":
 
 import asyncio
 import logging
-from typing import Self
+from typing import Any, Literal, Self
 from contextlib import AbstractAsyncContextManager
 
 #
 # Project imports
 #
-from core.protocol import (
+from backend.core.protocol import (
     PacketReader,
     PacketWriter,
     MCProtocolError
 )
-from models.config import Version
+from backend.models import Version
 
 logger = logging.getLogger(__name__)
 
-class MCClient(AbstractAsyncContextManager):
+class MCClient(AbstractAsyncContextManager['MCClient']):
     def __init__(
-            self, hostname: str,
-            port: int,
-            version: Version=Version(
-                name="0.0.0",
-                protocol=127
-            )
-        ):
+        self, hostname: str,
+        port: int,
+        version: Version = Version(
+            name="0.0.0",
+            protocol=127
+        )
+    ):
         self.hostname = hostname
         self.port = port
         self.version = version
 
-        self.reader = None
-        self.writer = None
+        self.reader: asyncio.StreamReader
+        self.writer: asyncio.StreamWriter
 
     async def __aenter__(self) -> Self:
         logger.debug("Entering")
@@ -42,14 +42,14 @@ class MCClient(AbstractAsyncContextManager):
         self.reader, self.writer = await asyncio.open_connection(self.hostname, self.port)
         return self
 
-    async def __aexit__(self, *_) -> bool:
+    async def __aexit__(self, *_: Any) -> Literal[False]:
         self.writer.close()
         await self.writer.wait_closed()
         logger.info("Closed connection to %s:%s", self.hostname, self.port)
         logger.debug("Exiting")
         return False
 
-    async def request_status(self, timeout: int | None=None) -> dict:
+    async def request_status(self, timeout: int | None = None) -> dict[str, Any] | None:
         try:
             logger.info("Requesting status from %s:%s", self.hostname, self.port)
             packet_reader = PacketReader(self.reader, timeout=timeout)
@@ -66,12 +66,11 @@ class MCClient(AbstractAsyncContextManager):
             return status_response
         except ConnectionResetError:
             logger.error("Server %s:%s closed connection unexpectedly", self.hostname, self.port)
-            return None
         except MCProtocolError as err:
             logger.error("Could not interpret server %s:%s's response: %s", self.hostname, self.port, err)
-            return None
         except Exception as err:
             logger.exception("Exception caught while requesting server %s:%s's status: %s", self.hostname, self.port, err)
+        return None
 
 if __name__ == "__main__":
     import json
@@ -98,7 +97,7 @@ if __name__ == "__main__":
         level = logging.ERROR
     logging.basicConfig(level=level, format="%(message)s")
     
-    async def request_status():
+    async def request_status() -> dict[str, Any] | None:
         async with MCClient(host, port) as client:
             return await client.request_status(timeout=30)
 
@@ -108,5 +107,5 @@ if __name__ == "__main__":
             if not args.full and "favicon" in status and len(status["favicon"]) > 100:
                 status["favicon"] = status["favicon"][:97] + "..."
             print(json.dumps(status, indent=4))
-    except Exception as e:
+    except Exception as e: 
         sys.exit(1)

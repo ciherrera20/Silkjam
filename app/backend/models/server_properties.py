@@ -4,7 +4,7 @@ from typing import Self
 
 import logging
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 

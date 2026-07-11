@@ -6,19 +6,20 @@ import logging
 from pathlib import Path
 from contextlib import suppress, AbstractContextManager, asynccontextmanager
 from mctools import AsyncPINGClient, AsyncRCONClient
+from typing import Any, Callable, AsyncGenerator
 
 #
 # Project imports
 #
-from supervisor import Supervisor, Timer
-from utils.logger_adapters import PrefixLoggerAdapter
-from models import ServerListing, Version, ServerProperties
-from core.backup_manager import MCBackupManager
-from core.status_checker import MCStatusChecker
+from backend.supervisor import Supervisor, Timer
+from backend.utils.logger_adapters import PrefixLoggerAdapter
+from backend.models import ServerListing, Version, ServerProperties
+from backend.core.backup_manager import MCBackupManager
+from backend.core.status_checker import MCStatusChecker
 
 logger = logging.getLogger(__name__)
 
-type PortCMFactory = callable[[], AbstractContextManager[int]]
+type PortCMFactory = Callable[[], AbstractContextManager[int]]
 
 class MCBackend(Supervisor):
     STARTING_SERVER_REGEX = re.compile(rb"^.*:(\d{5}).*$")
@@ -79,51 +80,51 @@ class MCBackend(Supervisor):
         self._online_player_change: asyncio.Event = asyncio.Event()
         self._online_player_change.set()
 
-        self.listing_change_cb = None
+        self.listing_change_cb: Callable[[], None] | None = None
 
     @property
-    def version(self):
+    def version(self) -> Version:
         return self.listing.version
 
     @property
-    def server_port(self):
+    def server_port(self) -> int | None:
         return self.properties.server_port
 
     @property
-    def rcon_port(self):
+    def rcon_port(self) -> int | None:
         return self.properties.rcon_port
 
     @property
-    def motd(self):
+    def motd(self) -> str:
         if self.mcproc_running():
             return self.properties.motd
         else:
             return self.listing.sleep_properties.motd or f"§e{self.properties.motd}"
 
     @property
-    def online_players(self):
+    def online_players(self) -> int:
         if self.mcproc_running():
             return self._online_players
         else:
             return 0
 
     @online_players.setter
-    def online_players(self, value):
+    def online_players(self, value: int) -> None:
         self._online_players = value
         self._online_player_change.set()
 
     @property
-    def max_players(self):
+    def max_players(self) -> int:
         return self.properties.max_players
 
     @property
-    def waking_kick_msg(self):
+    def waking_kick_msg(self) -> str:
         return self.listing.sleep_properties.waking_kick_msg
 
-    def on_listing_change(self, cb):
+    def on_listing_change(self, cb: Callable[[], None] | None) -> None:
         self.listing_change_cb = cb
 
-    def update_stats(self, stats):
+    def update_stats(self, stats: dict[str, Any]) -> None:
         self.online_players = stats["players"]["online"]
         version = Version(**stats["version"])
         if self.listing.version != version:
@@ -131,7 +132,7 @@ class MCBackend(Supervisor):
             if self.listing_change_cb is not None:
                 self.listing_change_cb()
 
-    async def _start(self):
+    async def _start(self) -> None:
         await super()._start()
 
         # Open and read icon if it exists
@@ -151,6 +152,7 @@ class MCBackend(Supervisor):
         self.properties.server_port = server_port
         self.properties.rcon_port = rcon_port
         self.properties.enable_rcon = True
+        self.properties.rcon_password = "admin" if not self.properties.rcon_password else self.properties.rcon_password
         self.properties.dump(self.root / "server.properties")
 
         # Start upstream server subprocess
@@ -166,6 +168,7 @@ class MCBackend(Supervisor):
 
         # Wait until server is done initializing
         async with asyncio.TaskGroup() as tg:
+            assert self.server_proc.stderr is not None  # We create it with a pipe
             log_stderr_task = tg.create_task(self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL))
             wait_until_done_initializing_task = tg.create_task(self.wait_until_done_initializing())
             done, pending = await asyncio.wait([wait_until_done_initializing_task, log_stderr_task], return_when=asyncio.FIRST_COMPLETED)
@@ -183,9 +186,14 @@ class MCBackend(Supervisor):
         self.start_unit_nowait(self.status_checker)
         self.start_unit_nowait(self.backup_manager)
 
-    async def _stop(self, *args):
+    async def _stop(self, *args: Any) -> None:
         # Stop running units
         await super()._stop(*args)
+
+        # We always create the process with pipes
+        assert self.server_proc.stdin is not None
+        assert self.server_proc.stdout is not None
+        assert self.server_proc.stderr is not None
 
         log_stdout_task = asyncio.create_task(self.log_pipe(self.server_proc.stdout, self.STDOUT_LOG_LEVEL))
         log_stderr_task = asyncio.create_task(self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL))
@@ -240,7 +248,8 @@ class MCBackend(Supervisor):
 
         await asyncio.gather(log_stdout_task, log_stderr_task)
 
-    async def read_stdout_until_done_initializing(self):
+    async def read_stdout_until_done_initializing(self) -> None:
+        assert self.server_proc.stdout is not None  # We always create the server process with pipes
         async for msg in self.server_proc.stdout:
             self.log.log(self.STDOUT_LOG_LEVEL, msg.decode("utf-8"))
             if m := self.STARTING_SERVER_REGEX.match(msg):
@@ -254,9 +263,10 @@ class MCBackend(Supervisor):
                 self.log.debug("Read done msg")
                 break
 
-    async def ping_server_until_done_initializing(self, ping_interval=5):
+    async def ping_server_until_done_initializing(self, ping_interval: float = 5) -> None:
         while True:
             self.log.debug("Sending ping...")
+            assert self.properties.server_port is not None  # We always write a server port to server properties before starting
             async with AsyncPINGClient("0.0.0.0", self.properties.server_port) as client:
                 with suppress(Exception):
                     await client.ping()
@@ -264,7 +274,7 @@ class MCBackend(Supervisor):
             await asyncio.sleep(ping_interval)
         self.log.debug("Received ping response")
 
-    async def wait_until_done_initializing(self, stdout_timeout=300, ping_timeout=60, ping_interval=5):
+    async def wait_until_done_initializing(self, stdout_timeout: float = 300, ping_timeout: float = 60, ping_interval: float = 5) -> None:
         try:
             await asyncio.wait_for(self.read_stdout_until_done_initializing(), stdout_timeout)
         except asyncio.TimeoutError:
@@ -278,14 +288,15 @@ class MCBackend(Supervisor):
             raise
         self.log.debug("Server finished initializing")
 
-    async def log_pipe(self, pipe: asyncio.StreamReader, level=logging.DEBUG):
+    async def log_pipe(self, pipe: asyncio.StreamReader, level: int = logging.DEBUG) -> None:
         async for msg in pipe:
             self.log.log(level, msg.decode("utf-8"))
 
-    async def request_status_continuously(self, interval=60, retry_interval=10, max_retries=3):
+    async def request_status_continuously(self, interval: float = 60, retry_interval: float = 10, max_retries: int = 3) -> None:
         retry_count = 0
         while True:
             try:
+                assert self.properties.server_port is not None  # We always write a server port to server properties before starting
                 async with AsyncPINGClient("0.0.0.0", self.properties.server_port) as client:
                     stats = await client.get_stats()
             except Exception:
@@ -303,17 +314,20 @@ class MCBackend(Supervisor):
                 await asyncio.sleep(interval)
 
     @asynccontextmanager
-    async def aping_client_factory(self):
+    async def aping_client_factory(self) -> AsyncGenerator[AsyncPINGClient]:
+        assert self.properties.server_port is not None  # We always write a server port to server properties before starting
         async with AsyncPINGClient("0.0.0.0", self.properties.server_port) as client:
             yield client
 
     @asynccontextmanager
-    async def arcon_client_factory(self):
+    async def arcon_client_factory(self) -> AsyncGenerator[AsyncRCONClient]:
+        assert self.properties.rcon_port is not None  # We always write an RCON port to server properties before starting
+        assert self.properties.rcon_password is not None  # We always write an RCON password to server properties before starting
         async with AsyncRCONClient("0.0.0.0", self.properties.rcon_port) as client:
             await client.login(self.properties.rcon_password)
             yield client
 
-    async def supervise(self):
+    async def supervise(self) -> None:
         while True:
             # Wait until the config changes or a proxy or server task is canceled or errors out
             (done_events, done_units), (_, _) = await self.supervise_until([self._online_player_change])
@@ -343,45 +357,54 @@ class MCBackend(Supervisor):
                 err = done_units[self.status_checker]
                 raise RuntimeError("Server stopped responding") from err
 
-    async def run(self):
+    async def run(self) -> None:
         self.log.debug("Starting server process monitor task for pid %s", self.server_proc.pid)
         async with asyncio.TaskGroup() as tg:
             supervise_task = tg.create_task(self.supervise())
             async with asyncio.TaskGroup() as proc_tg:
+                # We always create the server process with pipes
+                assert self.server_proc.stdout is not None
+                assert self.server_proc.stderr is not None
                 proc_tg.create_task(self.log_pipe(self.server_proc.stdout, self.STDOUT_LOG_LEVEL))
                 proc_tg.create_task(self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL))
             self.log.debug("Server process (pid %s) stopped communication", self.server_proc.pid)
             supervise_task.cancel()
 
-    def mcproc_starting(self):
-        return self.supervisor.is_starting(self)
+    def mcproc_starting(self) -> bool:
+        starting = self.supervisor.is_starting(self)
+        assert starting is not None  # Self is always set as a unit on the supervisor on construction
+        return starting
 
-    def mcproc_running(self):
-        return self.supervisor.is_running(self)
+    def mcproc_running(self) -> bool:
+        running = self.supervisor.is_running(self)
+        assert running is not None  # Self is always set as a unit on the supervisor on construction
+        return running
 
-    def mcproc_stopping(self):
-        return self.supervisor.is_stopping(self)
+    def mcproc_stopping(self) -> bool:
+        stopping = self.supervisor.is_stopping(self)
+        assert stopping is not None  # Self is always set as a unit on the supervisor on construction
+        return stopping
 
-    async def mcproc_done_starting(self):
+    async def mcproc_done_starting(self) -> bool:
         await self.supervisor.done_stopping(self)
         self.supervisor.start_unit_nowait(self)
         return await self.supervisor.done_starting(self)
 
-    async def mcproc_done_stopping(self):
+    async def mcproc_done_stopping(self) -> bool:
         self.supervisor.stop_unit_nowait(self)
         return await self.supervisor.done_stopping(self)
 
-    def start_mcproc(self):
+    def start_mcproc(self) -> None:
         self.supervisor.start_unit_nowait(self)
 
-    def stop_mcproc(self):
+    def stop_mcproc(self) -> None:
         self.supervisor.stop_unit_nowait(self)
 
-    def incr_online_players(self):
+    def incr_online_players(self) -> None:
         self.online_players += 1
 
-    def decr_online_players(self):
+    def decr_online_players(self) -> None:
         self.online_players -= 1
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"MCBackend(\'{self.name}\')"

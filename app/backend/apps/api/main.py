@@ -5,16 +5,17 @@ import asyncio
 import jsondiff
 import websockets
 from pathlib import Path
-from typing import Annotated
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Header
+from typing import Annotated, AsyncGenerator
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header
 from fastapi.responses import RedirectResponse
 from contextlib import asynccontextmanager
 import logging
+from functools import lru_cache
 
 #
 # Project imports
 #
-from models import Config
+from backend.models import Config
 
 STATIC_ROOT = Path("/app/data")
 
@@ -33,10 +34,11 @@ logging.getLogger("asyncio").setLevel(logging.WARNING)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 
 class LogFilter(logging.Filter):
-    def filter(self, record):
-        if record.args and len(record.args) >= 3:
-            endpoint = "/api/v1/auth/static"
-            if endpoint == record.args[2][:len(endpoint)] and record.args[4] in {204, 403}:
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) >= 3:
+            auth_endpoint = "/api/v1/auth/static"
+            endpoint = record.args[2]
+            if isinstance(endpoint, str) and auth_endpoint == endpoint[:len(auth_endpoint)] and record.args[4] in {204, 403}:
                 return False
         return True
 logging.getLogger("uvicorn.access").addFilter(LogFilter())
@@ -44,7 +46,21 @@ logging.getLogger("uvicorn.access").addFilter(LogFilter())
 logger = logging.getLogger(__name__)
 logger.info("Logging level is %s", level)
 
-async def update_config(app, config_created: asyncio.Event):
+_config: Config | None = None
+def get_config() -> Config:
+    global _config
+    assert _config is not None, "Config not yet created"
+    return _config
+
+def set_config(config: Config) -> None:
+    global _config
+    _config = config
+
+@lru_cache(maxsize=1)
+def get_config_lock() -> asyncio.Lock:
+    return asyncio.Lock()
+
+async def update_config(app: FastAPI, config_created: asyncio.Event) -> None:
     path = "/tmp/orchestrator.sock"
     while True:
         try:
@@ -60,28 +76,21 @@ async def update_config(app, config_created: asyncio.Event):
         async for message in websocket:
             data = app.state.config or {}
             update = json.loads(message)
-            async with app.state.config_lock:
-                app.state.config = Config.model_validate(jsondiff.patch(data, update), by_alias=True)
+            async with get_config_lock():
+                set_config(Config.model_validate(jsondiff.patch(data, update), by_alias=True))
             logger.info("Updated config")
             config_created.set()
     logger.warning("Lost connection to orchestrator")
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.config = None
-    app.state.config_lock = asyncio.Lock()
     async with asyncio.TaskGroup() as tg:
         config_created = asyncio.Event()
         task = tg.create_task(update_config(app, config_created))
         await config_created.wait()
         yield
         task.cancel()
-
-def get_config() -> Config:
-    return app.state.config
-
-def get_config_lock() -> asyncio.Lock:
-    return app.state.config_lock
 
 app = FastAPI(
     title="Silkjam API",
@@ -92,7 +101,7 @@ app = FastAPI(
 )
 
 @app.get("/", response_class=RedirectResponse, tags=["docs"])
-async def docs_redirect():
+async def docs_redirect() -> RedirectResponse:
     return RedirectResponse(url="/api/docs")
 
 # v1 router
@@ -103,7 +112,7 @@ async def auth_static_path(
     x_filepath: Annotated[str, Header()],
     config: Config=Depends(get_config),
     config_lock: asyncio.Lock=Depends(get_config_lock)
-):
+) -> None:
     # Make sure path isn't going outside the root path
     relpath: Path = Path(os.path.join("/", x_filepath)[1:])
     if relpath.parts[0] == "..":

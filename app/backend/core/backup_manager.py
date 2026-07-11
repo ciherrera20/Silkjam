@@ -4,20 +4,21 @@ import asyncio
 import logging
 from pathlib import Path
 from datetime import datetime
-from contextlib import AbstractContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from mctools import AsyncRCONClient
+from typing import Any, AsyncGenerator, Callable
 
 #
 # Project imports
 #
-from supervisor import Timer
-from utils.logger_adapters import PrefixLoggerAdapter
-from utils.backup_strategies import get_stale_backups
-from models import BackupProperties
+from backend.supervisor import Timer
+from backend.utils.logger_adapters import PrefixLoggerAdapter
+from backend.utils.backup_strategies import get_stale_backups
+from backend.models import BackupProperties
 
 logger = logging.getLogger(__name__)
 
-type AsyncRCONClientFactory = callable[[], AbstractContextManager[AsyncRCONClient]]
+type AsyncRCONClientFactory = Callable[[], AbstractAsyncContextManager[AsyncRCONClient]]
 
 class MCBackupManager(Timer):
     DATE_FMT = "%Y-%m-%d_%H:%M:%S"
@@ -28,12 +29,12 @@ class MCBackupManager(Timer):
     MIN_INTERVAL = 60
 
     def __init__(
-            self,
-            server_name: str,
-            root: Path,
-            properties: BackupProperties,
-            arcon_client_factory: AsyncRCONClientFactory,
-        ):
+        self,
+        server_name: str,
+        root: Path,
+        properties: BackupProperties,
+        arcon_client_factory: AsyncRCONClientFactory,
+    ):
         self.server_name = server_name
         self.root = root
         self.backup_root = root / "backups"
@@ -41,20 +42,22 @@ class MCBackupManager(Timer):
         self.properties = properties
         self.arcon_client_factory = arcon_client_factory
         self.log = PrefixLoggerAdapter(logger, {"server": server_name})
+        assert self.properties.interval is not None  # Backup manager is only created if interval is not None
         super().__init__(max(self.MIN_INTERVAL, self.properties.interval * 60))
 
     @property
-    def tick_interval(self):
+    def tick_interval(self) -> int:
+        assert self.properties.interval is not None  # Backup manager is only created if interval is not None
         return self.properties.interval * self.TICKS_PER_MINUTE
 
-    async def _start(self):
+    async def _start(self) -> None:
         await super()._start()
         self.check_nowait()  # Schedule status check immediately
 
-    async def _stop(self, *args):
+    async def _stop(self, *args: Any) -> None:
         await super()._stop(*args)
 
-    def load_play_time(self):
+    def load_play_time(self) -> int:
         # Read play time from level.dat
         nbtfile = nbtlib.load(self.root / "world" / "level.dat")
         return int(nbtfile["Data"]["Time"])
@@ -75,7 +78,7 @@ class MCBackupManager(Timer):
         return backups
 
     @asynccontextmanager
-    async def autosave_off(self, client: AsyncRCONClient=None):
+    async def autosave_off(self, client: AsyncRCONClient | None = None) -> AsyncGenerator[AsyncRCONClient]:
         if client is None:
             # Create client if it was not provided and close it when done
             async with self.arcon_client_factory() as client:
@@ -99,11 +102,11 @@ class MCBackupManager(Timer):
                 await client.command("save-on")
 
     async def create_world_archive(
-            self,
-            name: str,
-            retry_interval: int=5,
-            max_retries: int=3
-        ):
+        self,
+        name: str,
+        retry_interval: int = 5,
+        max_retries: int = 3,
+    ) -> None:
         backup: Path = self.backup_root / name
         tmp: Path = self.backup_root / (name + ".part")
         tmp.touch(exist_ok=True)
@@ -120,9 +123,9 @@ class MCBackupManager(Timer):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
-                stdout, stderr = await proc.communicate()
-                stdout = stdout.decode("utf-8")
-                stderr = stderr.decode("utf-8")
+                stdout_b, stderr_b = await proc.communicate()
+                stdout = stdout_b.decode("utf-8")
+                stderr = stderr_b.decode("utf-8")
                 self.log.debug("tar process returncode=%s, stdout=%s, stderr=%s", proc.returncode, stdout, stderr)
 
                 # Check for errors
@@ -145,7 +148,7 @@ class MCBackupManager(Timer):
                 self.log.warning("Removing partial backup %s", tmp.name)
                 tmp.unlink(missing_ok=True)  # cleanup leftover partials
 
-    async def save_and_backup(self, name: str):
+    async def save_and_backup(self, name: str) -> None:
         self.log.debug("Starting backup %s", name)
         try:
             async with self.autosave_off() as client:
@@ -168,17 +171,17 @@ class MCBackupManager(Timer):
             self.log.exception("Exception caught while creating backup: %s", err)
 
     def remove_stale_backups(
-            self,
-            backups: list[tuple[int, Path]],
-            total_ticks: int
-        ):
+        self,
+        backups: list[tuple[int, Path]],
+        total_ticks: int
+    ) -> None:
         # Remove stale backups
         stale_backups = get_stale_backups(backups, total_ticks, self.properties.max_backups, self.tick_interval, key=lambda backup: backup[0])
         for _, p in stale_backups:
             self.log.info("Removing stale backup %s", p.name)
             p.unlink(missing_ok=True)
 
-    async def run(self):
+    async def run(self) -> None:
         while True:
             # Sleep until next backup check
             self.log.debug("Next backup check scheduled in %ss", self.remaining)
@@ -209,9 +212,9 @@ class MCBackupManager(Timer):
             # Remove any stale backups
             self.remove_stale_backups(backups, total_ticks)
 
-    def check_nowait(self):
+    def check_nowait(self) -> None:
         self.log.debug("Backup check requested immediately, setting remaining time to 0")
         self.remaining = 0
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "MCBackupManager"

@@ -12,8 +12,10 @@ from backend.supervisor.base_unit import BaseUnit
 logger = logging.getLogger(__name__)
 
 class Timer(BaseUnit):
-    def __init__(self, timeout: float):
+    def __init__(self, timeout: int | float | None):
         super().__init__()
+        if isinstance(timeout, int):
+            timeout = float(timeout)
         self._timeout: float | None = timeout
         self._start_time: float
 
