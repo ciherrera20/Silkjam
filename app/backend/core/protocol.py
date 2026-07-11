@@ -4,9 +4,10 @@ import random
 import struct
 import asyncio
 import logging
-from collections import namedtuple
-from collections.abc import Buffer
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from typing import Any, Self, cast
 
 logger = logging.getLogger(__name__)
 
@@ -19,16 +20,36 @@ class PacketType(enum.IntEnum):
     PINGPONG = 1
     KEEPALIVE = 31
 
-type Packet[T: Buffer] = tuple[int, tuple[int, T]]
+type ByteData = bytes | bytearray | memoryview[int]
+type Packet = tuple[int, tuple[int, ByteData]]
+type JSON = dict[str, Any]
+
+
+def incomplete_read(data: ByteData, expected: int | None) -> asyncio.IncompleteReadError:
+    return asyncio.IncompleteReadError(bytes(data), expected)
 
 class MCProtocolError(ValueError):
     """Protocol error.
 
     Represents an error in the 
     """
-    def __init__(self, data: Buffer | Packet, *args, **kwargs):
+    def __init__(self, data: ByteData | Packet, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.data = data
+
+@dataclass(frozen=True, slots=True)
+class LegacyPingRequest:
+    protocol_version: int
+    hostname: str
+    port: int
+
+
+@dataclass(frozen=True, slots=True)
+class HandshakeRequest:
+    protocol_version: int
+    server_address: str
+    server_port: int
+    next_state: int
 
 class PacketReader:
     DEFAULT_BUFFER_SIZE = 1 << 12  # 4 KiB
@@ -38,10 +59,10 @@ class PacketReader:
     ############################################# Decode functions #############################################
 
     @staticmethod
-    def decode_legacy_ping(data: Buffer) -> tuple[int, dict]:
+    def decode_legacy_ping(data: ByteData) -> tuple[int, LegacyPingRequest]:
         try:
             if len(data) < 3 + 2 + 11 + 2:
-                raise asyncio.IncompleteReadError(data, None)
+                raise incomplete_read(data, None)
 
             # Read header
             i = 0
@@ -50,7 +71,7 @@ class PacketReader:
             i += 3
 
             # Read string
-            string_length = struct.unpack(">H", data[i:i+2])[0]
+            string_length: int = struct.unpack(">H", data[i:i+2])[0]
             i += 2
             string = str(data[i:i+string_length*2], "utf-16-be")
             if string != "MC|PingHost":
@@ -58,41 +79,41 @@ class PacketReader:
             i += string_length*2
 
             # Read remaining length
-            remaining_length = struct.unpack(">H", data[i:i+2])[0]
+            remaining_length: int = struct.unpack(">H", data[i:i+2])[0]
             i += 2
             if len(data[i:]) < remaining_length:
-                raise asyncio.IncompleteReadError(data, i + remaining_length)
+                raise incomplete_read(data, i + remaining_length)
 
             # Read remaining fields
-            protocol_version = struct.unpack(">B", data[i:i+1])[0]
+            protocol_version: int = struct.unpack(">B", data[i:i+1])[0]
             i += 1
 
-            hostname_length = struct.unpack(">H", data[i:i+2])[0]
+            hostname_length: int = struct.unpack(">H", data[i:i+2])[0]
             i += 2
 
             hostname = str(data[i:i+hostname_length*2], "utf-16-be")
             i += hostname_length*2
 
-            port = struct.unpack(">I", data[i:i+4])[0]
+            port: int = struct.unpack(">I", data[i:i+4])[0]
             i += 4
 
-            return i+1, {
-                "protocol_version": protocol_version,
-                "hostname": hostname,
-                "port": port
-            }
+            return i+1, LegacyPingRequest(
+                protocol_version = protocol_version,
+                hostname = hostname,
+                port = port
+            )
         except (MCProtocolError, struct.error, UnicodeDecodeError) as err:
             raise MCProtocolError(data, f"Malformed legacy ping: {err}") from err
 
     @staticmethod
-    def decode_varint(data: Buffer) -> tuple[int, int]:
+    def decode_varint(data: ByteData) -> tuple[int, int]:
         num = 0
         i = 0
         while True:
             if i + 1 > 5:
                 raise MCProtocolError(data, "VarInt is too big")
             if i > len(data) - 1:
-                raise asyncio.IncompleteReadError(data, None)
+                raise incomplete_read(data, None)
             b = data[i]
 
             num |= ((b & 0b01111111) << (7 * i))
@@ -108,21 +129,21 @@ class PacketReader:
         return i + 1, num
 
     @classmethod
-    def decode_string(cls, data: Buffer) -> tuple[int, str]:
+    def decode_string(cls, data: ByteData) -> tuple[int, str]:
         try:
             varint_length, string_length = cls.decode_varint(data)
             if len(data) < varint_length + string_length:
-                raise asyncio.IncompleteReadError(data, string_length + varint_length)
+                raise incomplete_read(data, string_length + varint_length)
             return varint_length + string_length, str(data[varint_length:varint_length + string_length], "utf-8")
         except (MCProtocolError, UnicodeDecodeError) as err:
             raise MCProtocolError(data, f"Malformed string: {err}") from err
 
     @classmethod
-    def decode_packet(cls, data: Buffer) -> Packet[Buffer]:
+    def decode_packet(cls, data: ByteData) -> Packet:
         try:
             varint_length, total_packet_length = cls.decode_varint(data)
             if len(data) < varint_length + total_packet_length:
-                raise asyncio.IncompleteReadError(data, total_packet_length)
+                raise incomplete_read(data, total_packet_length)
             packet_id_length, packet_id = cls.decode_varint(data[varint_length:])
             packet_data = data[varint_length + packet_id_length : varint_length + total_packet_length]
             return (varint_length + total_packet_length), (packet_id, packet_data)
@@ -130,7 +151,7 @@ class PacketReader:
             raise MCProtocolError(data, f"Malformed packet: {err}") from err
 
     @classmethod
-    def decode_handshake_packet(cls, packet: Packet[Buffer]) -> tuple[int, dict]:
+    def decode_handshake_packet(cls, packet: Packet) -> tuple[int, HandshakeRequest]:
         try:
             n, (packet_id, packet_data) = packet
             if packet_id != PacketType.HANDSHAKE:
@@ -140,23 +161,23 @@ class PacketReader:
             i += n
             n, server_address = cls.decode_string(packet_data[i:])
             i += n
-            server_port = struct.unpack(">H", packet_data[i:i+2])[0]
+            server_port: int = struct.unpack(">H", packet_data[i:i+2])[0]
             i += 2
             n, next_state = cls.decode_varint(packet_data[i:])
             i += n
             if i != len(packet_data):
                 raise MCProtocolError(packet, f"Extra data")
-            return n, {
-                "protocol_version": protocol_version,
-                "server_address": server_address,
-                "server_port": server_port,
-                "next_state": next_state
-            }
+            return n, HandshakeRequest(
+                protocol_version=protocol_version,
+                server_address=server_address,
+                server_port=server_port,
+                next_state=next_state,
+            )
         except (MCProtocolError, struct.error) as err:
             raise MCProtocolError(packet, f"Malformed handshake packet: {err}") from err
 
     @staticmethod
-    def decode_request_packet(packet: Packet[Buffer]) -> tuple[int, None]:
+    def decode_request_packet(packet: Packet) -> tuple[int, None]:
         try:
             n, (packet_id, packet_data) = packet
             if packet_id != PacketType.REQUEST:
@@ -168,7 +189,7 @@ class PacketReader:
             raise MCProtocolError(packet, f"Malformed request packet: {err}") from err
 
     @classmethod
-    def decode_json_packet(cls, packet: Packet[Buffer]) -> tuple[int, tuple[int, dict]]:
+    def decode_json_packet(cls, packet: Packet) -> tuple[int, tuple[int, JSON]]:
         try:
             n, (packet_id, packet_data) = packet
             _, json_string = cls.decode_string(packet_data)
@@ -177,27 +198,27 @@ class PacketReader:
             raise MCProtocolError(packet, f"Malformed json packet: {err}") from err
 
     @staticmethod
-    def decode_pingpong_packet(packet: Packet[Buffer]) -> tuple[int, int]:
+    def decode_pingpong_packet(packet: Packet) -> tuple[int, int]:
         try:
             n, (packet_id, packet_data) = packet
             if packet_id != PacketType.PINGPONG:
                 raise MCProtocolError(packet, f"Expected packet id {PacketType.PINGPONG} but got {packet_id}")
             if len(packet_data) != 8:
                 raise MCProtocolError(packet, f"Expected 8 bytes of payload but received {len(packet_data)}")
-            payload = struct.unpack(">q", packet_data)[0]
+            payload: int = struct.unpack(">q", packet_data)[0]
             return n, payload
         except (MCProtocolError, struct.error) as err:
             raise MCProtocolError(packet, f"Malformed ping/pong packet: {err}") from err
 
     @staticmethod
-    def decode_keepalive_packet(packet: Packet[Buffer]) -> tuple[int, int]:
+    def decode_keepalive_packet(packet: Packet) -> tuple[int, int]:
         try:
             n, (packet_id, packet_data) = packet
             if packet_id != PacketType.KEEPALIVE:
                 raise MCProtocolError(packet, f"Expected packet id {PacketType.KEEPALIVE} but got {packet_id}")
             if len(packet_data) != 8:
                 raise MCProtocolError(packet, f"Expected 8 bytes of payload but received {len(packet_data)}")
-            keepalive_id = struct.unpack(">q", packet_data)[0]
+            keepalive_id: int = struct.unpack(">q", packet_data)[0]
             return n, keepalive_id
         except (MCProtocolError, struct.error) as err:
             raise MCProtocolError(packet, f"Malformed keepalive packet: {err}") from err
@@ -215,14 +236,14 @@ class PacketReader:
             max_buffer_size: int=MAX_BUFFER_SIZE,
             min_free_space: int=MIN_READ_SIZE,
             save: bool=False
-        ) -> tuple[memoryview, int, int, int]:
+        ) -> tuple[memoryview[int], int, int, int, int]:
         # j - i is how much space we still have occupied
         k = k if save else i  # save bytes k:j or i:j
         old_data = data
         if j - k < n - (n >> 2):  # Less than 1/4 of the buffer will be occupied with unparsed data
             # Halve buffer, not going below default buffer size
             n = max(n >> 1, min_buffer_size)
-        elif j - k > n - min_free_space:  # Buffer is completely occupied with unparsed data
+        elif j - k > n - min_free_space:  # ByteData is completely occupied with unparsed data
             # Double buffer
             n = min(n << 1, max_buffer_size)
         logger.debug("Allocating new %s byte buffer", n)
@@ -232,18 +253,19 @@ class PacketReader:
         i -= k
         return data, i, j, k, n
 
-    def __init__(self, reader: asyncio.StreamReader, initial_data: Buffer=b"", timeout: int | None=None):
+    def __init__(self, reader: asyncio.StreamReader, initial_data: ByteData=b"", timeout: int | None=None):
         self.reader = reader
 
         # Allocate buffer
         #         0    :    i     i     :     j     j   :    n
         # data = [parsed data] + [unparsed data] + [free space]
-        self.i = 0                    # Start of unparsed data
-        self.j = len(initial_data)    # Start of unread data
-        self.k = 0                    # Start of saved data. Should never be less than i.
-        self.n = self.DEFAULT_BUFFER_SIZE  # Size of buffer
-        self.data, self.i, self.j, self.k, self.n = self._allocate_buffer(initial_data, self.i, self.j, self.k, self.n)
-        self.packet_length = None
+        self.i: int = 0                    # Start of unparsed data
+        self.j: int = len(initial_data)    # Start of unread data
+        self.k: int = 0                    # Start of saved data. Should never be less than i.
+        self.n: int = self.DEFAULT_BUFFER_SIZE  # Size of buffer
+        initial_view = memoryview(initial_data)
+        self.data, self.i, self.j, self.k, self.n = self._allocate_buffer(initial_view, self.i, self.j, self.k, self.n)
+        self.packet_length: int | None = None
         self.timeout = timeout
         self._lock = asyncio.Lock()
         self._save = False
@@ -256,7 +278,7 @@ class PacketReader:
     def saved(self) -> memoryview:
         return self.data[self.k:self.j]
 
-    async def _read_legacy_ping(self) -> dict:
+    async def _read_legacy_ping(self) -> LegacyPingRequest:
         async with self._lock:
             data, i, j, k, n, save = self.data, self.i, self.j, self.k, self.n, self._save
             try:
@@ -267,7 +289,7 @@ class PacketReader:
                     except asyncio.IncompleteReadError:
                         logger.debug("Incomplete legacy ping")
                         if (n - j) < self.MIN_READ_SIZE:  # Need to allocate a new buffer
-                            logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                            logger.debug("ByteData state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
                             data, i, j, k, n = self._allocate_buffer(data, i, j, k, n, save=save)
                         if j == n:  # We already resized the buffer, but we hit its max size
                             raise MCProtocolError(data, "Exceeded maximum buffer size")
@@ -284,15 +306,15 @@ class PacketReader:
                         i += total_length  # Update start of unparsed bytes
                         return legacy_ping
                     finally:
-                        logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                        logger.debug("ByteData state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
                         pass
             finally:
                 self.data, self.i, self.j, self.k, self.n = data, i, j, k, n
 
-    async def read_legacy_ping(self, timeout: int | None=None) -> dict:
+    async def read_legacy_ping(self, timeout: int | None=None) -> LegacyPingRequest:
         return await asyncio.wait_for(self._read_legacy_ping(), timeout)
 
-    async def _read_packet(self) -> Packet[memoryview]:
+    async def _read_packet(self) -> Packet:
         async with self._lock:
             data, i, j, k, n, packet_length = self.data, self.i, self.j, self.k, self.n, self.packet_length
             try:
@@ -304,7 +326,7 @@ class PacketReader:
                     except asyncio.IncompleteReadError:
                         logger.debug("Incomplete VarInt")
                         if (n - j) < self.MIN_READ_SIZE:  # Need to allocate a new buffer
-                            logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                            logger.debug("ByteData state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
                             data, i, j, k, n = self._allocate_buffer(data, i, j, k, n, save=self._save)
                         if j == n:  # We already resized the buffer, but we hit its max size
                             raise MCProtocolError(data, "Exceeded maximum buffer size")
@@ -324,7 +346,7 @@ class PacketReader:
                         except asyncio.IncompleteReadError:
                             logger.debug("Incomplete packet")
                             if (n - j) < min(self.MIN_READ_SIZE, packet_length):  # Need to allocate a new buffer
-                                logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                                logger.debug("ByteData state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
                                 data, i, j, k, n = self._allocate_buffer(data, i, j, k, n, save=self._save)
                             if j == n:  # We already resized the buffer, but we hit its max size
                                 raise MCProtocolError(data, "Exceeded maximum buffer size")
@@ -340,23 +362,23 @@ class PacketReader:
                         else:
                             i += total_length  # Update start of unparsed bytes
                             packet_length = None
-                            return total_length, (packet_id, packet_data)
+                            return total_length, (packet_id, cast(memoryview[int], packet_data))
                     finally:
-                        logger.debug("Buffer state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
+                        logger.debug("ByteData state [parsed:unparsed:free](size) = [%s:%s:%s](%s)", i, j-i, n-j, n)
                         pass
             finally:
                 self.data, self.i, self.j, self.k, self.n, self.packet_length = data, i, j, k, n, packet_length
 
-    async def read_packet(self, timeout: int | None=None) -> Packet[memoryview]:
+    async def read_packet(self, timeout: int | None=None) -> Packet:
         return await asyncio.wait_for(self._read_packet(), timeout or self.timeout)
 
-    async def read_handshake_packet(self, timeout: int | None=None) -> dict:
+    async def read_handshake_packet(self, timeout: int | None=None) -> HandshakeRequest:
         return self.decode_handshake_packet(await self.read_packet(timeout=timeout or self.timeout))[1]
 
-    async def read_request_packet(self, timeout: int | None=None):
+    async def read_request_packet(self, timeout: int | None=None) -> None:
         return self.decode_request_packet(await self.read_packet(timeout=timeout or self.timeout))[1]
 
-    async def read_json_packet(self, timeout: int | None=None) -> tuple[int, dict]:
+    async def read_json_packet(self, timeout: int | None=None) -> tuple[int, JSON]:
         return self.decode_json_packet(await self.read_packet(timeout=timeout or self.timeout))[1]
 
     async def read_pingpong_packet(self, timeout: int | None=None) -> int:
@@ -366,7 +388,7 @@ class PacketReader:
         return self.decode_keepalive_packet(await self.read_packet(timeout=timeout or self.timeout))[1]
 
     @asynccontextmanager
-    async def save(self):
+    async def save(self) -> AsyncIterator[Self]:
         try:
             self._save = True
             yield self
@@ -377,7 +399,7 @@ class PacketReader:
 
 class PacketWriter:
     @staticmethod
-    def random_long():
+    def random_long() -> int:
         """Generate a random Long.
 
         Can be used for a ping or keepalive packet.
@@ -385,22 +407,23 @@ class PacketWriter:
         Returns:
             int: Random Long.
         """
-        return struct.unpack(">q", random.randbytes(8))[0]
+        value: int = struct.unpack(">q", random.randbytes(8))[0]
+        return value
 
     ############################################# Encode functions #############################################
 
     @staticmethod
-    def encode_legacy_ping(protocol_version, hostname, port) -> bytes:
+    def encode_legacy_ping(protocol_version: int, hostname: str, port: int) -> bytes:
         header = b"\xfe\x01\xfa"
-        string = "MC|PingHost"
-        string_length = struct.pack(">H", len(string))
-        string = string.encode("utf-16-be")
-        protocol_version = struct.pack(">B", protocol_version)
+        channel = "MC|PingHost"
+        string_length = struct.pack(">H", len(channel))
+        channel_data = channel.encode("utf-16-be")
+        protocol_version_data = struct.pack(">B", protocol_version)
         hostname_length = struct.pack(">H", len(hostname))
-        hostname = hostname.encode("utf-16-be")
-        port = struct.pack(">I", port)
-        remaining_length = struct.pack(">H", len(protocol_version + hostname_length + hostname + port))
-        return header + string_length + string + remaining_length + protocol_version + hostname_length + hostname + port
+        hostname_data = hostname.encode("utf-16-be")
+        port_data = struct.pack(">I", port)
+        remaining_length = struct.pack(">H", len(protocol_version_data + hostname_length + hostname_data + port_data))
+        return header + string_length + channel_data + remaining_length + protocol_version_data + hostname_length + hostname_data + port_data
 
     @staticmethod
     def encode_legacy_ping_response(protocol_version: int, mc_version: str, motd: str, max_players: int) -> bytes:
@@ -430,7 +453,7 @@ class PacketWriter:
         return cls.encode_varint(len(str_data)) + str_data
 
     @classmethod
-    def encode_packet(cls, packet_id, packet_data: bytes) -> bytes:
+    def encode_packet(cls, packet_id: int, packet_data: bytes) -> bytes:
         packet_id_data = cls.encode_varint(packet_id)
         n = len(packet_id_data) + len(packet_data)
         return cls.encode_varint(n) + packet_id_data + packet_data
@@ -440,11 +463,11 @@ class PacketWriter:
         return cls.encode_packet(0, cls.encode_varint(protocol_version) + cls.encode_string(server_address) + struct.pack(">H", server_port) + cls.encode_varint(next_state))
 
     @classmethod
-    def encode_request_packet(cls):
+    def encode_request_packet(cls) -> bytes:
         return cls.encode_packet(0, b"")
 
     @classmethod
-    def encode_json_packet(cls, packet_id: int, payload: dict) -> bytes:
+    def encode_json_packet(cls, packet_id: int, payload: JSON) -> bytes:
         return cls.encode_packet(packet_id, cls.encode_string(json.dumps(payload)))
 
     @classmethod
@@ -461,26 +484,26 @@ class PacketWriter:
         self.writer = writer
         self.timeout = timeout
 
-    def write_legacy_ping_response(self, protocol_version: int, mc_version: str, motd: str, max_players: int):
+    def write_legacy_ping_response(self, protocol_version: int, mc_version: str, motd: str, max_players: int) -> None:
         self.writer.write(self.encode_legacy_ping_response(protocol_version, mc_version, motd, max_players))
 
-    def write_packet(self, packet_id, packet_data: bytes):
+    def write_packet(self, packet_id: int, packet_data: bytes) -> None:
         self.writer.write(self.encode_packet(packet_id, packet_data))
 
-    def write_handshake_packet(self, protocol_version: int, server_address: str, server_port: int, next_state: int=1):
+    def write_handshake_packet(self, protocol_version: int, server_address: str, server_port: int, next_state: int=1) -> None:
         self.writer.write(self.encode_handshake_packet(protocol_version, server_address, server_port, next_state=next_state))
 
-    def write_request_packet(self):
+    def write_request_packet(self) -> None:
         self.writer.write(self.encode_request_packet())
 
-    def write_json_packet(self, packet_id: int, payload: dict):
+    def write_json_packet(self, packet_id: int, payload: JSON) -> None:
         self.writer.write(self.encode_json_packet(packet_id, payload))
 
-    def write_pingpong_packet(self, payload: int):
+    def write_pingpong_packet(self, payload: int) -> None:
         self.writer.write(self.encode_pingpong_packet(payload))
 
-    def write_keepalive_packet(self, keepalive_id: int):
+    def write_keepalive_packet(self, keepalive_id: int) -> None:
         self.writer.write(self.encode_keepalive_packet(keepalive_id))
 
-    async def drain(self, timeout: int | None=None):
+    async def drain(self, timeout: int | None=None) -> None:
         await asyncio.wait_for(self.writer.drain(), timeout or self.timeout)
