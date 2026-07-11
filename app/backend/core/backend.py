@@ -50,7 +50,7 @@ class MCBackend(Supervisor):
         self.log = PrefixLoggerAdapter(logger, {"server": self.name})
 
         self.properties = ServerProperties.load(self.root / "server.properties")
-        self.icon = None
+        self.icon: str | None = None
 
         self.server_proc: asyncio.subprocess.Process
 
