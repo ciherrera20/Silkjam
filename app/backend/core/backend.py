@@ -1,21 +1,20 @@
+import asyncio
+import base64
+import logging
 import re
 import signal
-import base64
-import asyncio
-import logging
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractContextManager, asynccontextmanager, suppress
 from pathlib import Path
-from contextlib import suppress, AbstractContextManager, asynccontextmanager
-from mctools import AsyncPINGClient, AsyncRCONClient
-from typing import Any, Callable, AsyncGenerator
+from typing import Any
 
-#
-# Project imports
-#
-from backend.supervisor import Supervisor, Timer
-from backend.utils.logger_adapters import PrefixLoggerAdapter
-from backend.models import ServerListing, Version, ServerProperties
+from mctools import AsyncPINGClient, AsyncRCONClient
+
 from backend.core.backup_manager import MCBackupManager
 from backend.core.status_checker import MCStatusChecker
+from backend.models import ServerListing, ServerProperties, Version
+from backend.supervisor import Supervisor, Timer
+from backend.utils.logger_adapters import PrefixLoggerAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +204,7 @@ class MCBackend(Supervisor):
                 self.log.debug("Minecraft server process has already exited")
 
             if not shutdown:
-                with suppress(asyncio.TimeoutError):
+                with suppress(TimeoutError):
                     # Send stop command and wait before progressing to SIGINT
                     self.log.debug("Sending stop command to minecraft server process %s", self.server_proc.pid)
                     self.server_proc.stdin.write(b"stop\n")
@@ -215,7 +214,7 @@ class MCBackend(Supervisor):
                     self.log.debug("Minecraft server process exited after stop command")
 
             if not shutdown:
-                with suppress(asyncio.TimeoutError):
+                with suppress(TimeoutError):
                     # Send SIGINT and wait before progressing to SIGTERM
                     self.log.debug("Sending SIGINT to minecraft server process %s", self.server_proc.pid)
                     self.server_proc.send_signal(signal.SIGINT)
@@ -224,7 +223,7 @@ class MCBackend(Supervisor):
                     self.log.debug("Minecraft server process exited after SIGINT")
 
             if not shutdown:
-                with suppress(asyncio.TimeoutError):
+                with suppress(TimeoutError):
                     # Send SIGTERM and wait before progressing to SIGKILL
                     self.log.debug("Sending SIGTERM to minecraft server process %s", self.server_proc.pid)
                     self.server_proc.send_signal(signal.SIGTERM)
@@ -277,13 +276,13 @@ class MCBackend(Supervisor):
     async def wait_until_done_initializing(self, stdout_timeout: float = 300, ping_timeout: float = 60, ping_interval: float = 5) -> None:
         try:
             await asyncio.wait_for(self.read_stdout_until_done_initializing(), stdout_timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.log.error("Did not receive server started log")
             raise
 
         try:
             await asyncio.wait_for(self.ping_server_until_done_initializing(ping_interval), ping_timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.log.error("Could not ping server")
             raise
         self.log.debug("Server finished initializing")

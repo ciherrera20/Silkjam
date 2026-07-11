@@ -1,16 +1,14 @@
+import asyncio
+import logging
 import os
 import sys
-import asyncio
-from fastapi import FastAPI, APIRouter, Depends, WebSocket
-from fastapi.responses import RedirectResponse
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-import logging
-from typing import AsyncGenerator
 from functools import lru_cache
 
-#
-# Project imports
-#
+from fastapi import APIRouter, Depends, FastAPI, WebSocket
+from fastapi.responses import RedirectResponse
+
 from backend.core.orchestrator import MCOrchestrator
 from backend.models import Config
 

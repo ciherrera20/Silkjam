@@ -1,25 +1,22 @@
-import os
-import re
 import asyncio
 import logging
+import os
+import re
 from contextlib import suppress
 from typing import Any
 
-#
-# Project imports
-#
-from backend.supervisor import BaseUnit
 from backend.core.backend import MCBackend
 from backend.core.protocol import (
     HandshakeRequest,
     LegacyPingRequest,
+    MCProtocolError,
     PacketReader,
-    PacketWriter,
     PacketType,
-    MCProtocolError
+    PacketWriter,
 )
+from backend.models import SUBDOMAIN_REGEX, ProxyListing
+from backend.supervisor import BaseUnit
 from backend.utils.logger_adapters import PrefixLoggerAdapter
-from backend.models import ProxyListing, SUBDOMAIN_REGEX
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +87,7 @@ class MCProxy(BaseUnit):
                         conn_logger.debug("No server found at %s", server_address)
                 else:
                     conn_logger.debug("Invalid server address %s", server_address)
-            except MCProtocolError as err:
+            except MCProtocolError:
                 # Handle modern handshake
                 try:
                     # Read initial handshake packet
@@ -203,7 +200,7 @@ class MCProxy(BaseUnit):
         try:
             # Try connecting to the backend server
             backend_reader, backend_writer = await asyncio.open_connection("0.0.0.0", backend.server_port)
-        except ConnectionRefusedError as err:
+        except ConnectionRefusedError:
             # Backend server should be ready but is refusing connections
             conn_logger.error("Backend server %s should be ready, but is not accepting connections", backend.name)
             kick_payload = {

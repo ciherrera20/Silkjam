@@ -1,20 +1,19 @@
+import asyncio
+import json
+import logging
 import os
 import sys
-import json
-import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from functools import lru_cache
+from pathlib import Path
+from typing import Annotated
+
 import jsondiff
 import websockets
-from pathlib import Path
-from typing import Annotated, AsyncGenerator
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import RedirectResponse
-from contextlib import asynccontextmanager
-import logging
-from functools import lru_cache
 
-#
-# Project imports
-#
 from backend.models import Config
 
 STATIC_ROOT = Path("/app/data")

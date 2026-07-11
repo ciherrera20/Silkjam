@@ -1,5 +1,7 @@
 import enum
-from pydantic import BaseModel, Field, PrivateAttr, PositiveInt, NonNegativeInt
+
+from pydantic import BaseModel, Field, NonNegativeInt, PositiveInt, PrivateAttr
+
 
 class SleepProperties(BaseModel):
     timeout: PositiveInt | None = None

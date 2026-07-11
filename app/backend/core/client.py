@@ -1,21 +1,16 @@
 if __name__ == "__main__":
-    import os, sys, subprocess
+    import os
+    import subprocess
+    import sys
     ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True).stdout.decode("utf-8").strip()
     sys.path.append(os.path.join(ROOT, 'app', 'orchestrator'))
 
 import asyncio
 import logging
-from typing import Any, Literal, Self
 from contextlib import AbstractAsyncContextManager
+from typing import Any, Literal, Self
 
-#
-# Project imports
-#
-from backend.core.protocol import (
-    PacketReader,
-    PacketWriter,
-    MCProtocolError
-)
+from backend.core.protocol import MCProtocolError, PacketReader, PacketWriter
 from backend.models import Version
 
 logger = logging.getLogger(__name__)
@@ -73,8 +68,9 @@ class MCClient(AbstractAsyncContextManager['MCClient']):
         return None
 
 if __name__ == "__main__":
-    import json
     import argparse
+    import json
+
     from rich_argparse import RichHelpFormatter
 
     parser = argparse.ArgumentParser(description="Simple Minecraft client that requests a status from a server", formatter_class=RichHelpFormatter)
@@ -107,5 +103,5 @@ if __name__ == "__main__":
             if not args.full and "favicon" in status and len(status["favicon"]) > 100:
                 status["favicon"] = status["favicon"][:97] + "..."
             print(json.dumps(status, indent=4))
-    except Exception as e: 
+    except Exception: 
         sys.exit(1)

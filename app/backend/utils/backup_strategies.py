@@ -1,5 +1,7 @@
 import math
-from typing import Callable, Iterable, cast, overload
+from collections.abc import Callable, Iterable
+from typing import cast, overload
+
 
 def to_nearest(x: int, d: int=1) -> int:
     return math.floor(x / d + 1) * d
@@ -41,7 +43,7 @@ def format_backups[T](backups: Iterable[T],   t: int, n: int, d: int = 1, base: 
     elif num_out_of_bounds <= 9:
         s += f"|...{num_out_of_bounds}]"
     else:
-        s += f"|...*]"
+        s += "|...*]"
     return s
 
 @overload

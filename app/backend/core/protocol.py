@@ -1,12 +1,12 @@
-import json
+import asyncio
 import enum
+import json
+import logging
 import random
 import struct
-import asyncio
-import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from collections.abc import AsyncIterator
 from typing import Any, Self, cast
 
 logger = logging.getLogger(__name__)
@@ -166,7 +166,7 @@ class PacketReader:
             n, next_state = cls.decode_varint(packet_data[i:])
             i += n
             if i != len(packet_data):
-                raise MCProtocolError(packet, f"Extra data")
+                raise MCProtocolError(packet, "Extra data")
             return n, HandshakeRequest(
                 protocol_version=protocol_version,
                 server_address=server_address,
@@ -183,7 +183,7 @@ class PacketReader:
             if packet_id != PacketType.REQUEST:
                 raise MCProtocolError(packet, f"Expected packet id {PacketType.REQUEST} but got {packet_id}")
             if len(packet_data) != 0:
-                raise MCProtocolError(packet, f"Extra data")
+                raise MCProtocolError(packet, "Extra data")
             return n, None
         except MCProtocolError as err:
             raise MCProtocolError(packet, f"Malformed request packet: {err}") from err

@@ -1,12 +1,11 @@
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from mctools import AsyncPINGClient
-from typing import Any, Callable
+from typing import Any
 
-#
-# Project imports
-#
+from mctools import AsyncPINGClient
+
 from backend.supervisor import Timer
 from backend.utils.logger_adapters import PrefixLoggerAdapter
 

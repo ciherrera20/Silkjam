@@ -1,10 +1,12 @@
-import re
 import json
+import re
 from pathlib import Path
+from typing import Self
+
 from pydantic import BaseModel, model_validator
+
 from backend.models.proxy_listing import ProxyListing
 from backend.models.server_listing import ServerListing
-from typing import Self
 
 SUBDOMAIN_REGEX: re.Pattern[str] = re.compile(r"(?:(?!-)[a-zA-Z0-9\-]+\.)*?(?!-)[a-zA-Z0-9\-]+")
 

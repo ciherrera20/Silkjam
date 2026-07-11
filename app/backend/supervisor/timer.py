@@ -1,12 +1,9 @@
-import time
 import asyncio
+import logging
+import time
 from contextlib import suppress
 from types import TracebackType
-import logging
 
-#
-# Project imports
-#
 from backend.supervisor.base_unit import BaseUnit
 
 logger = logging.getLogger(__name__)

@@ -1,17 +1,15 @@
-import os
 import asyncio
 import logging
-from pathlib import Path
+import os
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Generator
+from pathlib import Path
+from typing import Any
 
-#
-# Project imports
-#
-from backend.supervisor import Supervisor
 from backend.core.backend import MCBackend
 from backend.core.proxy import MCProxy
-from backend.models import Config, UNKNOWN_VERSION
+from backend.models import UNKNOWN_VERSION, Config
+from backend.supervisor import Supervisor
 
 logger = logging.getLogger(__name__)
 

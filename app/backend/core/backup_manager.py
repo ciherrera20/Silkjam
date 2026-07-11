@@ -1,20 +1,19 @@
-import re
-import nbtlib
 import asyncio
 import logging
-from pathlib import Path
-from datetime import datetime
+import re
+from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from mctools import AsyncRCONClient
-from typing import Any, AsyncGenerator, Callable
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-#
-# Project imports
-#
-from backend.supervisor import Timer
-from backend.utils.logger_adapters import PrefixLoggerAdapter
-from backend.utils.backup_strategies import get_stale_backups
+import nbtlib
+from mctools import AsyncRCONClient
+
 from backend.models import BackupProperties
+from backend.supervisor import Timer
+from backend.utils.backup_strategies import get_stale_backups
+from backend.utils.logger_adapters import PrefixLoggerAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +161,7 @@ class MCBackupManager(Timer):
                 # Try creating backup
                 try:
                     await self.create_world_archive(name)
-                except RuntimeError as err:
+                except RuntimeError:
                     await client.command("say §4Backup failed")
                 else:
                     await client.command("say §2Backup succeeded")

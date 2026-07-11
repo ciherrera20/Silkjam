@@ -1,15 +1,14 @@
 import asyncio
-from enum import IntEnum
-from typing import Iterable, Any, assert_never
+import logging
+from collections.abc import Iterable
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
-import logging
-logger = logging.getLogger(__name__)
+from enum import IntEnum
+from typing import Any, assert_never
 
-#
-# Project imports
-#
 from backend.supervisor.base_unit import BaseUnit
+
+logger = logging.getLogger(__name__)
 
 class Status(IntEnum):
     """Unit status"""
