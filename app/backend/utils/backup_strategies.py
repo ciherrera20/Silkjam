@@ -1,18 +1,22 @@
 import math
-from typing import Iterable, TypeVar
+from typing import Callable, Iterable, cast, overload
 
-T = TypeVar("T")
-
-def to_nearest(x, d=1):
+def to_nearest(x: int, d: int=1) -> int:
     return math.floor(x / d + 1) * d
 
-def format_backups(backups, t, n, d=1, base=2, key=lambda b: b):
+@overload
+def format_backups[T](backups: Iterable[int], t: int, n: int, d: int = 1, base: int = 2, *, key: None = None) -> str: ...
+@overload
+def format_backups[T](backups: Iterable[T],   t: int, n: int, d: int = 1, base: int = 2, *, key: Callable[[T], int]) -> str: ...
+def format_backups[T](backups: Iterable[T],   t: int, n: int, d: int = 1, base: int = 2, *, key: Callable[[T], int] | None = None) -> str:
     """
     b is backup, n is new, s is save, x is expire
 
     t = 0
     [_|__|____|________|________________]
     """
+    if key is None:
+        key = lambda b: cast(int, b)
     bins = ["_" * (base ** i) for i in range(n)]
     num_out_of_bounds = 0
     for backup in backups:
@@ -40,20 +44,19 @@ def format_backups(backups, t, n, d=1, base=2, key=lambda b: b):
         s += f"|...*]"
     return s
 
-def get_stale_backups(
-        backups: Iterable[T],
-        t: int,
-        n: int,
-        d: int=1,
-        base: int=2,
-        key=lambda b: b
-    ) -> set[T]:
+@overload
+def get_stale_backups[T](backups: Iterable[int], t: int, n: int, d: int = 1, base: int = 2, *, key: None = None) -> set[int]: ...
+@overload
+def get_stale_backups[T](backups: Iterable[T],   t: int, n: int, d: int = 1, base: int = 2, *, key: Callable[[T], int]) -> set[T]: ...
+def get_stale_backups[T](backups: Iterable[T],   t: int, n: int, d: int = 1, base: int = 2, *, key: Callable[[T], int] | None = None) -> set[T]:
+    if key is None:
+        key = lambda b: cast(int, b)
     backups = sorted(backups, key=key)  # Sort oldest to newest
 
     # Determine the cutoff for backups and the number of backups to delete
     cutoff = to_nearest(t - ((base ** n) - 1) * d, d)
     num_stale = max(0, len(backups) - n + 1)
-    stale_backups = set()
+    stale_backups: set[T] = set()
 
     if len(stale_backups) == num_stale:
         return stale_backups
