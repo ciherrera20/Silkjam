@@ -1,6 +1,6 @@
 import asyncio
 from enum import IntEnum
-from typing import Iterable, Any
+from typing import Iterable, Any, assert_never
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
 import logging
@@ -9,8 +9,7 @@ logger = logging.getLogger(__name__)
 #
 # Project imports
 #
-from .base_unit import BaseUnit
-from utils.logger_adapters import PrefixLoggerAdapter
+from backend.supervisor.base_unit import BaseUnit
 
 class Status(IntEnum):
     """Unit status"""
@@ -20,10 +19,10 @@ class Status(IntEnum):
     EXITING = 3
     STOPPED = 4
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"{self.__class__.__name__}.{self.name}"
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name
 
 class Supervisor(BaseUnit):
@@ -66,8 +65,8 @@ class Supervisor(BaseUnit):
         """Unit state"""
         restart: bool
         status: Status = Status.READY
-        task: asyncio.Task = None
-        result: Any = None
+        task: asyncio.Task[BaseException | None] | None = None
+        result: BaseException | None = None
 
         # Set to true when a START command is in the queue, or the unit is
         # starting after the START command has been processed.
@@ -98,23 +97,23 @@ class Supervisor(BaseUnit):
     ALL_UNITS = "ALL_UNITS"
     ALL_EVENTS_AND_UNITS = "ALL_EVENTS_AND_UNITS"
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize supervisor"""
         super().__init__()
         self.stack: AsyncExitStack
 
         self._units: dict[BaseUnit, Supervisor.State] = {}  # unit -> Supervisor.State
-        self._running_unit_tasks: dict[asyncio.Task, BaseUnit] = {}  # task -> unit
+        self._running_unit_tasks: dict[asyncio.Task[Any], BaseUnit] = {}  # task -> unit
         self._lock: asyncio.Lock = asyncio.Lock()  # synchronize access to _running_unit_tasks
-        self._command_queue: asyncio.Queue[Supervisor.Command] = asyncio.Queue()  # hold pending commands
+        self._command_queue: asyncio.Queue[tuple[Supervisor.Command, BaseUnit]] = asyncio.Queue()  # hold pending commands
 
-    async def _start(self):
+    async def _start(self) -> None:
         """Enter supervisor context"""
         logger.info("Entering")
         self.stack = AsyncExitStack()
         await self.stack.__aenter__()
 
-    async def _stop(self, *args):
+    async def _stop(self, *args: Any) -> None:
         """Exit supervisor context"""
         logger.info("Exiting")
         for unit in self._units:
@@ -127,7 +126,7 @@ class Supervisor(BaseUnit):
     def _start_unit(
             self,
             unit: BaseUnit
-        ):
+        ) -> None:
         """Create background task to run unit through its lifecycle. Must be
         called within supervisor context, and unit must have been added.
 
@@ -142,9 +141,9 @@ class Supervisor(BaseUnit):
         state.task = task
 
     async def _run_unit(
-            self,
-            unit: BaseUnit
-        ) -> Any:
+        self,
+        unit: BaseUnit
+    ) -> BaseException | None:
         """Coroutine to run a unit through its lifecycle. Exceptions at any
         stage are caught and stored, except for `KeyboardInterrupt` and
         `SystemExit`, which are propagated.
@@ -198,7 +197,7 @@ class Supervisor(BaseUnit):
                     await asyncio.sleep(0)
 
                 logger.debug("Running %s", unit)
-                state.result = await unit.run()
+                state.result = await unit.run()  # type: ignore[func-returns-value]
             except BaseException as err:  # Run failed
                 if isinstance(err, asyncio.CancelledError):
                     logger.info("%s canceled", unit)
@@ -235,6 +234,7 @@ class Supervisor(BaseUnit):
             state.status = Status.STOPPED if state.pending_stop or not state.restart else Status.READY
             state.pending_stop = state.force_pending_stop = False
             if not self._lock.locked():
+                assert state.task is not None
                 del self._running_unit_tasks[state.task]
             state.task = None
             state.done_entering.clear()
@@ -243,7 +243,7 @@ class Supervisor(BaseUnit):
     def _stop_unit(
             self,
             unit: BaseUnit
-        ):
+        ) -> None:
         """Cancel the background task running a unit. Must be called within
         supervisor context, unit must have been added, and unit must currently
         be running.
@@ -255,13 +255,14 @@ class Supervisor(BaseUnit):
         # Task must be in running tasks
         logger.debug("Stopping %s", unit)
         state = self._units[unit]
+        assert state.task is not None
         state.task.cancel()
 
     def _handle_command_queue(
             self,
-            item: tuple[Command, BaseUnit]=None,
-            allowed: set[Command]={Command.START, Command.STOP}
-        ):
+            item: tuple[Command, BaseUnit] | None = None,
+            allowed: set[Command] = {Command.START, Command.STOP}
+        ) -> None:
         """Handles executing commands in the command queue.
 
         Args:
@@ -311,138 +312,138 @@ class Supervisor(BaseUnit):
                 item = self._command_queue.get_nowait()
 
     async def _supervise_until(
-            self,
-            events: Iterable[asyncio.Event]=[],
-            return_when: str=FIRST_EVENT_OR_UNIT
-        ) -> tuple[
+        self,
+        events: Iterable[asyncio.Event] = [],
+        return_when: str = FIRST_EVENT_OR_UNIT
+    ) -> tuple[
+        tuple[
+            set[asyncio.Event],
+            dict[BaseUnit, None | BaseException]],
+        tuple[
+            set[asyncio.Event],
+            set[BaseUnit]
+        ]
+    ]:
+        """Supervise units until some condition is met. A set of events can be
+        passed in as part of the condition to return.
+
+        The allowed return conditions are:
+            FIRST_EVENT: first event set.
+            FIRST_UNIT: first unit finished.
+            FIRST_EVENT_OR_UNIT: first event set or unit finished.
+            ALL_EVENTS: all events set.
+            ALL_UNITS: all units finished.
+            ALL_EVENTS_AND_UNITS: all events set and all units finished.
+
+        Args:
+            events (Iterable[asyncio.Event], optional): Events that the
+                supervisor can return at when set. Defaults to [].
+            return_when (str, optional): Condition to return at. Defaults to
+                FIRST_EVENT_OR_UNIT.
+
+        Returns:
             tuple[
-                set[asyncio.Event],
-                dict[BaseUnit, None | BaseException]],
-            tuple[
-                set[asyncio.Event],
-                set[BaseUnit]
-            ]
-        ]:
-            """Supervise units until some condition is met. A set of events can be
-            passed in as part of the condition to return.
-
-            The allowed return conditions are:
-                FIRST_EVENT: first event set.
-                FIRST_UNIT: first unit finished.
-                FIRST_EVENT_OR_UNIT: first event set or unit finished.
-                ALL_EVENTS: all events set.
-                ALL_UNITS: all units finished.
-                ALL_EVENTS_AND_UNITS: all events set and all units finished.
-
-            Args:
-                events (Iterable[asyncio.Event], optional): Events that the
-                    supervisor can return at when set. Defaults to [].
-                return_when (str, optional): Condition to return at. Defaults to
-                    FIRST_EVENT_OR_UNIT.
-
-            Returns:
                 tuple[
-                    tuple[
-                        set[asyncio.Event],
-                        dict[BaseUnit, None | BaseException]
-                    ],
-                    tuple[
-                        set[asyncio.Event],
-                        set[BaseUnit]
-                    ]
-                ]: (done_events, done_units), (pending_events, pending_units).
-                    done_units is a dictionary from units to their results or
-                    exceptions caught.
-            """
-            # Set up return values
-            done_events = set()
-            # done_units = {unit: state.result for unit, state in self._units.items() if unit not in self._running_unit_tasks}  # Unit -> exception?
-            done_units = {}  # Unit -> exception?
-            pending_events = set(event for event in events)
-            pending_units = set(unit for unit in self._running_unit_tasks.values())
+                    set[asyncio.Event],
+                    dict[BaseUnit, None | BaseException]
+                ],
+                tuple[
+                    set[asyncio.Event],
+                    set[BaseUnit]
+                ]
+            ]: (done_events, done_units), (pending_events, pending_units).
+                done_units is a dictionary from units to their results or
+                exceptions caught.
+        """
+        # Set up return values
+        done_events = set()
+        # done_units = {unit: state.result for unit, state in self._units.items() if unit not in self._running_unit_tasks}  # Unit -> exception?
+        done_units = {}  # Unit -> exception?
+        pending_events = set(event for event in events)
+        pending_units = set(unit for unit in self._running_unit_tasks.values())
 
-            # Use task group to handle cancellations cleanly
-            async with asyncio.TaskGroup() as tg:
+        # Use task group to handle cancellations cleanly
+        async with asyncio.TaskGroup() as tg:
 
-                # Set up initial tasks
-                monitor_command_queue_task = tg.create_task(self._command_queue.get())
-                pending_event_tasks = {tg.create_task(event.wait()): event for event in pending_events}  # task -> event
+            # Set up initial tasks
+            monitor_command_queue_task = tg.create_task(self._command_queue.get())
+            pending_event_tasks = {tg.create_task(event.wait()): event for event in pending_events}  # task -> event
 
-                # Main supervise loop
-                ret = False
-                while not ret:
-                    # Start/restart any READY units
-                    for unit, state in self._units.items():
-                        if state.restart and state.status == Status.READY and not state.pending_start:
-                            logger.info("Restarting %s", unit)
-                            self.start_unit_nowait(unit)
+            # Main supervise loop
+            ret = False
+            while not ret:
+                # Start/restart any READY units
+                for unit, state in self._units.items():
+                    if state.restart and state.status == Status.READY and not state.pending_start:
+                        logger.info("Restarting %s", unit)
+                        self.start_unit_nowait(unit)
 
-                    # Protect critical part of supervise loop
-                    async with self._lock:
-                        done, pending = await asyncio.wait([monitor_command_queue_task, *pending_event_tasks, *self._running_unit_tasks], return_when=asyncio.FIRST_COMPLETED)
+                # Protect critical part of supervise loop
+                async with self._lock:
+                    done, pending = await asyncio.wait([monitor_command_queue_task, *pending_event_tasks, *self._running_unit_tasks], return_when=asyncio.FIRST_COMPLETED)
 
-                    # Handle any commands received
-                    if monitor_command_queue_task in done:
-                        self._handle_command_queue(monitor_command_queue_task.result())
-                        monitor_command_queue_task = tg.create_task(self._command_queue.get())
+                # Handle any commands received
+                if monitor_command_queue_task in done:
+                    self._handle_command_queue(monitor_command_queue_task.result())
+                    monitor_command_queue_task = tg.create_task(self._command_queue.get())
 
-                    # Handle done events and units
-                    for t in done:
-                        if t in pending_event_tasks:
-                            event = pending_event_tasks[t]
-                            done_events.add(event)
-                            del pending_event_tasks[t]
-                            pending_events.discard(event)
-                        elif t in self._running_unit_tasks:
-                            unit = self._running_unit_tasks[t]
-                            done_units[unit] = t.result()
-                            pending_units.discard(unit)
-                            if unit in self._units:
-                                state = self._units[unit]
-                                logger.info("%s is done with status %s", unit, state.status)
-                                state.task = None
-                            del self._running_unit_tasks[t]
+                # Handle done events and units
+                for t in done:
+                    if t in pending_event_tasks:
+                        event = pending_event_tasks[t]
+                        done_events.add(event)
+                        del pending_event_tasks[t]
+                        pending_events.discard(event)
+                    elif t in self._running_unit_tasks:
+                        unit = self._running_unit_tasks[t]
+                        done_units[unit] = t.result()
+                        pending_units.discard(unit)
+                        if unit in self._units:
+                            state = self._units[unit]
+                            logger.info("%s is done with status %s", unit, state.status)
+                            state.task = None
+                        del self._running_unit_tasks[t]
 
-                    # Handle pending events and units
-                    for t in pending:
-                        if t in pending_event_tasks:
-                            pending_events.add(pending_event_tasks[t])
-                        elif t in self._running_unit_tasks:
-                            pending_units.add(self._running_unit_tasks[t])
+                # Handle pending events and units
+                for t in pending:
+                    if t in pending_event_tasks:
+                        pending_events.add(pending_event_tasks[t])
+                    elif t in self._running_unit_tasks:
+                        pending_units.add(self._running_unit_tasks[t])
 
-                    # Add any new running unit tasks
-                    for unit in self._running_unit_tasks.values():
-                        pending_units.add(unit)
+                # Add any new running unit tasks
+                for unit in self._running_unit_tasks.values():
+                    pending_units.add(unit)
 
-                    # Determine whether the return condition is met
-                    if return_when == Supervisor.FIRST_EVENT:
-                        ret = len(done_events) > 0
-                    elif return_when == Supervisor.FIRST_UNIT:
-                        ret = len(done_units) > 0
-                    elif return_when == Supervisor.FIRST_EVENT_OR_UNIT:
-                        ret = len(done_events) > 0 or len(done_units) > 0
-                    elif return_when == Supervisor.ALL_EVENTS:
-                        ret = len(pending_events) == 0
-                    elif return_when == Supervisor.ALL_UNITS:
-                        ret = len(pending_units) == 0
-                    elif return_when == Supervisor.ALL_EVENTS_AND_UNITS:
-                        ret = len(pending_events) == 0 and len(pending_units) == 0
+                # Determine whether the return condition is met
+                if return_when == Supervisor.FIRST_EVENT:
+                    ret = len(done_events) > 0
+                elif return_when == Supervisor.FIRST_UNIT:
+                    ret = len(done_units) > 0
+                elif return_when == Supervisor.FIRST_EVENT_OR_UNIT:
+                    ret = len(done_events) > 0 or len(done_units) > 0
+                elif return_when == Supervisor.ALL_EVENTS:
+                    ret = len(pending_events) == 0
+                elif return_when == Supervisor.ALL_UNITS:
+                    ret = len(pending_units) == 0
+                elif return_when == Supervisor.ALL_EVENTS_AND_UNITS:
+                    ret = len(pending_events) == 0 and len(pending_units) == 0
 
-                # Cancel remaining tasks
-                monitor_command_queue_task.cancel()
-                for t in pending_event_tasks:
-                    t.cancel()
+            # Cancel remaining tasks
+            monitor_command_queue_task.cancel()
+            for t in pending_event_tasks:
+                t.cancel()
 
-            # Return information about done and pending events and units
-            logger.debug("supervise_until return condition met: %s", return_when)
-            return (done_events, done_units), (pending_events, pending_units)
+        # Return information about done and pending events and units
+        logger.debug("supervise_until return condition met: %s", return_when)
+        return (done_events, done_units), (pending_events, pending_units)
 
     def add_unit(
-            self,
-            unit: BaseUnit,
-            restart: bool = True,
-            stopped: bool = False
-        ) -> bool:
+        self,
+        unit: BaseUnit,
+        restart: bool = True,
+        stopped: bool = False
+    ) -> bool:
         """Add a unit. Can be called before the supervisor is started either
         by entering it using async with or by directly calling start.
 
@@ -471,9 +472,9 @@ class Supervisor(BaseUnit):
         return True
 
     def remove_unit_nowait(
-            self,
-            unit: BaseUnit
-        ) -> bool:
+        self,
+        unit: BaseUnit
+    ) -> bool:
         """Remove a unit. Can be called before the supervisor is started
         either by entering it using async with or by directly calling start.
 
@@ -492,9 +493,9 @@ class Supervisor(BaseUnit):
         return True
 
     def start_unit_nowait(
-            self,
-            unit: BaseUnit,
-        ) -> bool:
+        self,
+        unit: BaseUnit,
+    ) -> bool:
         """Schedule a unit to be started by the supervisor.
 
         A unit currently scheduled to be stopped or currently stopping will
@@ -513,21 +514,23 @@ class Supervisor(BaseUnit):
             return False
 
         state = self._units[unit]
-        if state.status in {Status.READY, Status.STOPPED}:
+        if state.status == Status.READY or state.status == Status.STOPPED:
             if not state.pending_start:
                 self._command_queue.put_nowait((self.Command.START, unit))
                 state.pending_start = True
             state.status = Status.READY
             return True
-        elif state.status in {Status.ENTERING, Status.RUNNING}:
+        elif state.status == Status.ENTERING or state.status == Status.RUNNING:
             return True
         elif state.status == Status.EXITING:
             return False
+        else:
+            assert_never(state.status)
 
     async def supervise_until_done_starting(
-            self,
-            unit: BaseUnit
-        ) -> bool:
+        self,
+        unit: BaseUnit
+    ) -> bool:
         """Wait for a unit to finish starting while running all other units.
 
         Args:
@@ -589,9 +592,9 @@ class Supervisor(BaseUnit):
             return False
 
     async def start_unit(
-            self,
-            unit: BaseUnit
-        ) -> bool:
+        self,
+        unit: BaseUnit
+    ) -> bool:
         """Schedule a unit to start if it does not already have a start
         scheduled and wait for it to finish starting while running all other
         units.
@@ -610,10 +613,10 @@ class Supervisor(BaseUnit):
         return await self.supervise_until_done_starting(unit)
 
     def stop_unit_nowait(
-            self,
-            unit: BaseUnit,
-            force: bool=False
-        ) -> bool:
+        self,
+        unit: BaseUnit,
+        force: bool = False
+    ) -> bool:
         """Schedule a unit to be stopped by the supervisor.
 
         A unit not currently stopped will always be scheduled to be stopped,
@@ -635,7 +638,7 @@ class Supervisor(BaseUnit):
             return False
 
         state = self._units[unit]
-        if state.status in {Status.READY, Status.STOPPED}:  # Unit is not currently running
+        if state.status == Status.READY or state.status == Status.STOPPED:  # Unit is not currently running
             if state.pending_start:  # But it has a start pending, so we schedule a stop for after it has started
                 if not state.pending_stop:
                     self._command_queue.put_nowait((self.Command.STOP, unit))
@@ -645,7 +648,7 @@ class Supervisor(BaseUnit):
                 # Update state to STOPPED
                 state.status = Status.STOPPED
             return True
-        elif state.status in {Status.ENTERING, Status.RUNNING}:
+        elif state.status == Status.ENTERING or state.status == Status.RUNNING:
             if not state.pending_stop:
                 self._command_queue.put_nowait((self.Command.STOP, unit))
                 state.pending_stop = True
@@ -654,6 +657,8 @@ class Supervisor(BaseUnit):
         elif state.status == Status.EXITING:
             state.pending_stop = True
             return True
+        else:
+            assert_never(state.status)
 
     async def supervise_until_done_stopping(
             self,
@@ -687,9 +692,9 @@ class Supervisor(BaseUnit):
             return False
 
     async def done_stopping(
-            self,
-            unit: BaseUnit
-        ) -> bool:
+        self,
+        unit: BaseUnit
+    ) -> bool:
         """Wait for a unit to finish stopping without running other units.
 
         Meant to be called by tasks running parallel to supervise_until, which
@@ -720,10 +725,10 @@ class Supervisor(BaseUnit):
             return False
 
     async def stop_unit(
-            self,
-            unit: BaseUnit,
-            force: bool=False
-        ) -> bool:
+        self,
+        unit: BaseUnit,
+        force: bool=False
+    ) -> bool:
         """Schedule a unit to stop if it does not already have a stop
         scheduled and wait for it to finish stopping while running all other
         units.
@@ -747,9 +752,9 @@ class Supervisor(BaseUnit):
         return await self.supervise_until_done_stopping(unit)
 
     def status(
-            self,
-            unit: BaseUnit
-        ) -> Status | None:
+        self,
+        unit: BaseUnit
+    ) -> Status | None:
         """Get the status of a unit.
 
         The possible statuses are:
@@ -774,9 +779,9 @@ class Supervisor(BaseUnit):
         return self._units[unit].status
 
     def is_ready(
-            self,
-            unit: BaseUnit
-        ) -> bool | None:
+        self,
+        unit: BaseUnit
+    ) -> bool | None:
         """Check wether a unit is currently ready.
 
         Args:
@@ -791,9 +796,9 @@ class Supervisor(BaseUnit):
         return self._units[unit].status == Status.READY
 
     def is_starting(
-            self,
-            unit: BaseUnit
-        ) -> bool | None:
+        self,
+        unit: BaseUnit
+    ) -> bool | None:
         """Check wether a unit is currently starting.
 
         Args:
@@ -808,9 +813,9 @@ class Supervisor(BaseUnit):
         return self._units[unit].status == Status.ENTERING
 
     def is_running(
-            self,
-            unit: BaseUnit
-        ) -> bool | None:
+        self,
+        unit: BaseUnit
+    ) -> bool | None:
         """Check wether a unit is currently running.
 
         Args:
@@ -825,9 +830,9 @@ class Supervisor(BaseUnit):
         return self._units[unit].status == Status.RUNNING
 
     def is_stopping(
-            self,
-            unit: BaseUnit
-        ) -> bool | None:
+        self,
+        unit: BaseUnit
+    ) -> bool | None:
         """Check wether a unit is currently stopping.
 
         Args:
@@ -842,9 +847,9 @@ class Supervisor(BaseUnit):
         return self._units[unit].status == Status.EXITING
 
     def is_stopped(
-            self,
-            unit: BaseUnit
-        ) -> bool | None:
+        self,
+        unit: BaseUnit
+    ) -> bool | None:
         """Check wether a unit is currently stopped.
 
         Args:
@@ -918,7 +923,7 @@ class Supervisor(BaseUnit):
         await self.start()
         return await self._supervise_until(events, return_when)
 
-    async def run(self):
+    async def run(self) -> None:
         """Supervises units forever"""
         while True:
             await self.supervise_until()
