@@ -29,7 +29,8 @@ class Config(BaseModel):
                     listing.errors.append(f'Proxy subdomain "{subdomain}" is invalid')
                 if server_name not in self.server_listing:
                     listing.errors.append(
-                        f'Proxy subdomain "{subdomain}" routes to non-existent server "{server_name}"'
+                        f'Proxy subdomain "{subdomain}" routes to non-existent '
+                        f'server "{server_name}"'
                     )
             if listing.valid:
                 proxy_ports.add(listing.port)

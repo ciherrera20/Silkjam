@@ -37,7 +37,7 @@ def format_backups[T](
     [_|__|____|________|________________]
     """
     if key is None:
-        key = lambda b: cast(int, b)
+        key = lambda b: cast(int, b)  # noqa: E731
     bins = ["_" * (base**i) for i in range(n)]
     num_out_of_bounds = 0
     for backup in backups:
@@ -90,7 +90,7 @@ def get_stale_backups[T](
     key: Callable[[T], int] | None = None,
 ) -> set[T]:
     if key is None:
-        key = lambda b: cast(int, b)
+        key = lambda b: cast(int, b)  # noqa: E731
     backups = sorted(backups, key=key)  # Sort oldest to newest
 
     # Determine the cutoff for backups and the number of backups to delete

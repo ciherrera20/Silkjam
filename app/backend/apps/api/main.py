@@ -126,8 +126,8 @@ v1_router = APIRouter(prefix="/v1", tags=["v1"])
 @v1_router.get("/auth/static", status_code=204)
 async def auth_static_path(
     x_filepath: Annotated[str, Header()],
-    config: Config = Depends(get_config),
-    config_lock: asyncio.Lock = Depends(get_config_lock),
+    config: Config = Depends(get_config),  # noqa: B008
+    config_lock: asyncio.Lock = Depends(get_config_lock),  # noqa: B008
 ) -> None:
     # Make sure path isn't going outside the root path
     relpath: Path = Path(os.path.join("/", x_filepath)[1:])

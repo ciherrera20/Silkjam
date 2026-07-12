@@ -176,7 +176,7 @@ class MCProxy(BaseUnit):
                             packet_writer.write_pingpong_packet(ping_payload)
                             await packet_writer.drain()
                     elif handshake.next_state == 2:
-                        # Backend server is starting, respond with message telling the client to wait
+                        # The backend is starting, so tell the client to wait.
                         conn_logger.info(
                             "Backend server %s not ready yet, sending waking kick message",
                             backend.name,
@@ -348,7 +348,7 @@ class MCProxy(BaseUnit):
                             conn_logger,
                         )
                 else:
-                    # Backend server is running, forward packets to it regardless of whether the client is logging in or not
+                    # The backend is running, so forward packets regardless of login state.
                     await self._forward_to_backend(
                         backend,
                         handshake,

@@ -67,12 +67,15 @@ v1_router = APIRouter(prefix="/v1", tags=["v1"])
 
 
 @v1_router.get("/config")
-async def get_config(orch: MCOrchestrator = Depends(get_orch)) -> Config:
+async def get_config(orch: MCOrchestrator = Depends(get_orch)) -> Config:  # noqa: B008
     return orch.config
 
 
 @v1_router.websocket("/config")
-async def websocket_config(websocket: WebSocket, orch: MCOrchestrator = Depends(get_orch)) -> None:
+async def websocket_config(
+    websocket: WebSocket,
+    orch: MCOrchestrator = Depends(get_orch),  # noqa: B008
+) -> None:
     await websocket.accept()
     await websocket.send_json(orch.config.model_dump(by_alias=True))
 

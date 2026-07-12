@@ -23,11 +23,11 @@ logger = logging.getLogger(__name__)
 
 class MCClient(AbstractAsyncContextManager["MCClient"]):
     def __init__(
-        self, hostname: str, port: int, version: Version = Version(name="0.0.0", protocol=127)
+        self, hostname: str, port: int, version: Version | None = None
     ):
         self.hostname = hostname
         self.port = port
-        self.version = version
+        self.version = version or Version(name="0.0.0", protocol=127)
 
         self.reader: asyncio.StreamReader
         self.writer: asyncio.StreamWriter
@@ -88,7 +88,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "host",
-        help='Hostname of the Minecraft server. You may also specify a port using the ":" character.',
+        help=(
+            "Hostname of the Minecraft server. You may also specify a port "
+            'using the ":" character.'
+        ),
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", default=False, help="Enables verbose logging"

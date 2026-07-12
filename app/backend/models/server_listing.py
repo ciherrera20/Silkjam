@@ -11,7 +11,7 @@ class SleepProperties(BaseModel):
     )
 
 
-class BackupStrategy(str, enum.Enum):
+class BackupStrategy(enum.StrEnum):
     EXPONENTIAL = "exponential"
     FIXED = "fixed"
 

@@ -11,7 +11,7 @@ from typing import Any, Self, cast
 
 logger = logging.getLogger(__name__)
 
-################################################ Minecraft protocol ################################################
+# --- Minecraft protocol ---
 # Documentation at: https://minecraft.wiki/w/Minecraft_Wiki:Protocol_documentation
 
 
@@ -62,7 +62,7 @@ class PacketReader:
     MAX_BUFFER_SIZE = 1 << 23  # 8 MiB
     MIN_READ_SIZE = 1 << 10  # 1 KiB
 
-    ############################################# Decode functions #############################################
+    # --- Decode functions ---
 
     @staticmethod
     def decode_legacy_ping(data: ByteData) -> tuple[int, LegacyPingRequest]:
@@ -327,11 +327,11 @@ class PacketReader:
                             )
                             data, i, j, k, n = self._allocate_buffer(data, i, j, k, n, save=save)
                         if j == n:  # We already resized the buffer, but we hit its max size
-                            raise MCProtocolError(data, "Exceeded maximum buffer size")
+                            raise MCProtocolError(data, "Exceeded maximum buffer size") from None
                         new_data = await self.reader.read(n - j)
                         logger.debug("Read %s bytes from client", len(new_data))
                         if len(new_data) == 0:
-                            raise ConnectionResetError
+                            raise ConnectionResetError from None
                         data[j : j + len(new_data)] = new_data
                         j += len(new_data)
                     except MCProtocolError as err:
@@ -385,11 +385,11 @@ class PacketReader:
                                 data, i, j, k, n, save=self._save
                             )
                         if j == n:  # We already resized the buffer, but we hit its max size
-                            raise MCProtocolError(data, "Exceeded maximum buffer size")
+                            raise MCProtocolError(data, "Exceeded maximum buffer size") from None
                         new_data = await self.reader.read(n - j)
                         logger.debug("Read %s bytes from client", len(new_data))
                         if len(new_data) == 0:
-                            raise ConnectionResetError
+                            raise ConnectionResetError from None
                         data[j : j + len(new_data)] = new_data
                         j += len(new_data)
                     except MCProtocolError as err:
@@ -415,11 +415,13 @@ class PacketReader:
                                     data, i, j, k, n, save=self._save
                                 )
                             if j == n:  # We already resized the buffer, but we hit its max size
-                                raise MCProtocolError(data, "Exceeded maximum buffer size")
+                                raise MCProtocolError(
+                                    data, "Exceeded maximum buffer size"
+                                ) from None
                             new_data = await self.reader.read(n - j)
                             logger.debug("Read %s bytes from client", len(new_data))
                             if len(new_data) == 0:
-                                raise ConnectionResetError
+                                raise ConnectionResetError from None
                             data[j : j + len(new_data)] = new_data
                             j += len(new_data)
                         except MCProtocolError as err:
@@ -499,7 +501,7 @@ class PacketWriter:
         value: int = struct.unpack(">q", random.randbytes(8))[0]
         return value
 
-    ############################################# Encode functions #############################################
+    # --- Encode functions ---
 
     @staticmethod
     def encode_legacy_ping(protocol_version: int, hostname: str, port: int) -> bytes:
@@ -530,7 +532,10 @@ class PacketWriter:
         protocol_version: int, mc_version: str, motd: str, max_players: int
     ) -> bytes:
         current_player_count = 0
-        string = f"§1\x00{protocol_version}\x00{mc_version}\x00{motd}\x00{current_player_count}\x00{max_players}"
+        string = (
+            f"§1\x00{protocol_version}\x00{mc_version}\x00{motd}"
+            f"\x00{current_player_count}\x00{max_players}"
+        )
         string_length = len(string)
         return b"\xff" + struct.pack(">H", min(string_length, 65535)) + string.encode("utf-16-be")
 

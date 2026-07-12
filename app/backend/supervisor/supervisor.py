@@ -261,7 +261,7 @@ class Supervisor(BaseUnit):
     def _handle_command_queue(
         self,
         item: tuple[Command, BaseUnit] | None = None,
-        allowed: set[Command] = {Command.START, Command.STOP},
+        allowed: set[Command] | None = None,
     ) -> None:
         """Handles executing commands in the command queue.
 
@@ -271,6 +271,9 @@ class Supervisor(BaseUnit):
             allowed (dict, optional): Commands to allow. Defaults to
                 {Command.START, Command.STOP}.
         """
+        if allowed is None:
+            allowed = set({self.Command.START, self.Command.STOP})
+
         with suppress(asyncio.QueueEmpty):
             if item is None:
                 item = self._command_queue.get_nowait()
@@ -300,18 +303,18 @@ class Supervisor(BaseUnit):
                                     self._stop_unit(unit)
                                 else:
                                     logger.debug(
-                                        "%s is currently starting, scheduling STOP for after it finishes starting",
+                                        "%s is starting; scheduling STOP after it finishes",
                                         unit,
                                     )
                             elif state.pending_start:
                                 if state.force_pending_stop:
                                     logger.debug(
-                                        "%s is pending start, scheduling forced STOP for when it starts",
+                                        "%s is pending; scheduling forced STOP when it starts",
                                         unit,
                                     )
                                 else:
                                     logger.debug(
-                                        "%s is pending start, scheduling STOP for after it finishes starting",
+                                        "%s is pending start; scheduling STOP after it finishes",
                                         unit,
                                     )
                             elif state.task is None:
@@ -359,7 +362,7 @@ class Supervisor(BaseUnit):
         """
         # Set up return values
         done_events = set()
-        # done_units = {unit: state.result for unit, state in self._units.items() if unit not in self._running_unit_tasks}  # Unit -> exception?
+        # Filled below with completed units and their results or exceptions.
         done_units = {}  # Unit -> exception?
         pending_events = set(event for event in events)
         pending_units = set(unit for unit in self._running_unit_tasks.values())

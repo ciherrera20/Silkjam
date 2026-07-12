@@ -379,7 +379,7 @@ class MCBackend(Supervisor):
             if self._online_player_change in done_events:
                 if self.online_players == 0:
                     if self.is_stopped(self.sleep_timer):
-                        # The timer expired and triggered a status check, which confirmed that no players are connected
+                        # The timer expired and the status check found no players connected.
                         self.log.info(
                             "No players connected for %ss, stopping server",
                             self.listing.sleep_properties.timeout,
@@ -394,7 +394,7 @@ class MCBackend(Supervisor):
                         self.sleep_timer.reset()
                 else:
                     if self.is_stopped(self.sleep_timer):
-                        # The timer expired and triggered a status check, which found that there are still players online
+                        # The timer expired and the status check found players online.
                         self.start_unit_nowait(self.sleep_timer)
                     if self.sleep_timer.timeout is not None:
                         self.log.debug("Suspending sleep timer")

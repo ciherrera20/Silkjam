@@ -143,7 +143,8 @@ class MCBackupManager(Timer):
                 if proc.returncode != 0:
                     # Fatal error ocurred
                     raise RuntimeError(
-                        f"Creating backup {name} failed with return code {proc.returncode} and error message: {stderr}"
+                        f"Creating backup {name} failed with return code {proc.returncode}: "
+                        f"{stderr}"
                     )
                 elif len(stderr) > 0:
                     # Non fatal error ocurred
@@ -158,7 +159,8 @@ class MCBackupManager(Timer):
 
             # Loop finished, meaning all retries failed
             raise RuntimeError(
-                f"Creating backup {name} failed: exceeded the maximum number of backup retries ({max_retries})"
+                f"Creating backup {name} failed: exceeded the maximum number "
+                f"of backup retries ({max_retries})"
             )
         finally:
             if tmp.is_file():
