@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import struct
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ class PacketType(enum.IntEnum):
     REQUEST = 0
     PINGPONG = 1
     KEEPALIVE = 31
+    LOGIN_START = 0
 
 
 type ByteData = bytes | bytearray | memoryview[int]
@@ -57,24 +59,48 @@ class HandshakeRequest:
     next_state: int
 
 
+@dataclass(frozen=True, slots=True)
+class LoginStart:
+    """The known and opaque portions of a Login Start packet."""
+
+    username: str
+    player_id: uuid.UUID | None
+    extra_data: bytes
+
+
 class PacketReader:
     DEFAULT_BUFFER_SIZE = 1 << 12  # 4 KiB
     MAX_BUFFER_SIZE = 1 << 23  # 8 MiB
     MIN_READ_SIZE = 1 << 10  # 1 KiB
 
     # --- Decode functions ---
+    #
+    # Each decoder returns `(consumed, value)`. `consumed` is the number of
+    # on-wire bytes represented by the decoded input. For packet decoders,
+    # this includes the packet-length VarInt and packet ID, as reported by
+    # `decode_packet`.
 
     @staticmethod
     def decode_legacy_ping(data: ByteData) -> tuple[int, LegacyPingRequest]:
+        """Return the legacy-ping byte length and its parsed request."""
         try:
-            if len(data) < 3 + 2 + 11 + 2:
+            # Check first byte as quick discriminator
+            if len(data) < 1:
                 raise incomplete_read(data, None)
+            if data[0] != 0xFE:
+                raise MCProtocolError(data, "Bad header")
 
-            # Read header
+            # Read full header
+            if len(data) < 3:
+                raise incomplete_read(data, None)
             i = 0
             if data[i : i + 3] != b"\xfe\x01\xfa":
                 raise MCProtocolError(data, "Bad header")
             i += 3
+
+            # Check data against known length of the starting fields
+            if len(data) < 3 + 2 + 22 + 2:
+                raise incomplete_read(data, None)
 
             # Read string
             string_length: int = struct.unpack(">H", data[i : i + 2])[0]
@@ -103,7 +129,7 @@ class PacketReader:
             port: int = struct.unpack(">I", data[i : i + 4])[0]
             i += 4
 
-            return i + 1, LegacyPingRequest(
+            return i, LegacyPingRequest(
                 protocol_version=protocol_version, hostname=hostname, port=port
             )
         except (MCProtocolError, struct.error, UnicodeDecodeError) as err:
@@ -111,6 +137,7 @@ class PacketReader:
 
     @staticmethod
     def decode_varint(data: ByteData) -> tuple[int, int]:
+        """Return the VarInt byte length and its decoded integer."""
         num = 0
         i = 0
         while True:
@@ -128,12 +155,13 @@ class PacketReader:
         num &= 0xFFFFFFFF  # Convert back to 4 bytes
 
         # Check if negative
-        if num > (1 << 31):
+        if num >= (1 << 31):
             num -= 1 << 32
         return i + 1, num
 
     @classmethod
     def decode_string(cls, data: ByteData) -> tuple[int, str]:
+        """Return the encoded-string byte length and its decoded text."""
         try:
             varint_length, string_length = cls.decode_varint(data)
             if len(data) < varint_length + string_length:
@@ -146,6 +174,7 @@ class PacketReader:
 
     @classmethod
     def decode_packet(cls, data: ByteData) -> Packet:
+        """Return the framed packet byte length and its ID/payload pair."""
         try:
             varint_length, total_packet_length = cls.decode_varint(data)
             if len(data) < varint_length + total_packet_length:
@@ -160,6 +189,7 @@ class PacketReader:
 
     @classmethod
     def decode_handshake_packet(cls, packet: Packet) -> tuple[int, HandshakeRequest]:
+        """Return the framed packet byte length and its handshake request."""
         try:
             n, (packet_id, packet_data) = packet
             if packet_id != PacketType.HANDSHAKE:
@@ -167,14 +197,14 @@ class PacketReader:
                     packet, f"Expected packet id {PacketType.HANDSHAKE} but got {packet_id}"
                 )
             i = 0
-            n, protocol_version = cls.decode_varint(packet_data)
-            i += n
-            n, server_address = cls.decode_string(packet_data[i:])
-            i += n
+            m, protocol_version = cls.decode_varint(packet_data)
+            i += m
+            m, server_address = cls.decode_string(packet_data[i:])
+            i += m
             server_port: int = struct.unpack(">H", packet_data[i : i + 2])[0]
             i += 2
-            n, next_state = cls.decode_varint(packet_data[i:])
-            i += n
+            m, next_state = cls.decode_varint(packet_data[i:])
+            i += m
             if i != len(packet_data):
                 raise MCProtocolError(packet, "Extra data")
             return n, HandshakeRequest(
@@ -188,6 +218,7 @@ class PacketReader:
 
     @staticmethod
     def decode_request_packet(packet: Packet) -> tuple[int, None]:
+        """Return the framed packet byte length and the empty request value."""
         try:
             n, (packet_id, packet_data) = packet
             if packet_id != PacketType.REQUEST:
@@ -202,9 +233,12 @@ class PacketReader:
 
     @classmethod
     def decode_json_packet(cls, packet: Packet) -> tuple[int, tuple[int, JSON]]:
+        """Return the framed packet byte length and its ID/JSON payload pair."""
         try:
             n, (packet_id, packet_data) = packet
-            _, json_string = cls.decode_string(packet_data)
+            json_length, json_string = cls.decode_string(packet_data)
+            if json_length != len(packet_data):
+                raise MCProtocolError(packet, "Extra data")
             return n, (packet_id, json.loads(json_string))
         except (
             MCProtocolError,
@@ -216,6 +250,7 @@ class PacketReader:
 
     @staticmethod
     def decode_pingpong_packet(packet: Packet) -> tuple[int, int]:
+        """Return the framed packet byte length and its ping/pong payload."""
         try:
             n, (packet_id, packet_data) = packet
             if packet_id != PacketType.PINGPONG:
@@ -233,6 +268,7 @@ class PacketReader:
 
     @staticmethod
     def decode_keepalive_packet(packet: Packet) -> tuple[int, int]:
+        """Return the framed packet byte length and its keepalive ID."""
         try:
             n, (packet_id, packet_data) = packet
             if packet_id != PacketType.KEEPALIVE:
@@ -247,6 +283,42 @@ class PacketReader:
             return n, keepalive_id
         except (MCProtocolError, struct.error) as err:
             raise MCProtocolError(packet, f"Malformed keepalive packet: {err}") from err
+
+    @classmethod
+    def decode_login_start_packet(
+        cls, packet: Packet, protocol_version: int
+    ) -> tuple[int, LoginStart]:
+        """Return the framed packet byte length and its parsed Login Start data.
+
+        For protocol versions before 1.20.2, ``extra_data`` preserves fields
+        Silkjam does not interpret. Later versions contain a required UUID,
+        followed by any future unparsed fields.
+        """
+        try:
+            n, (packet_id, packet_data) = packet
+            if packet_id != PacketType.LOGIN_START:
+                raise MCProtocolError(
+                    packet, f"Expected packet id {PacketType.LOGIN_START} but got {packet_id}"
+                )
+            i = 0
+            m, username = cls.decode_string(packet_data[i:])
+            i += m
+            if protocol_version < 759:
+                if i != len(packet_data):
+                    raise MCProtocolError(packet, "Extra data")
+                return n, LoginStart(username, None, b"")
+
+            if protocol_version < 764:
+                return n, LoginStart(username, None, bytes(packet_data[i:]))
+
+            if len(packet_data) - i < 16:
+                raise MCProtocolError(packet, "Missing player UUID")
+            player_id = uuid.UUID(bytes=bytes(packet_data[i : i + 16]))
+            i += 16
+            return n, LoginStart(username, player_id, bytes(packet_data[i:]))
+        except MCProtocolError as err:
+            raise MCProtocolError(packet, f"Malformed login start packet: {err}") from err
+
 
     ############################################################################################################
 
@@ -459,21 +531,29 @@ class PacketReader:
         )[1]
 
     async def read_request_packet(self, timeout: int | None = None) -> None:
-        return self.decode_request_packet(await self.read_packet(timeout=timeout or self.timeout))[
-            1
-        ]
+        return self.decode_request_packet(
+            await self.read_packet(timeout=timeout or self.timeout)
+        )[1]
 
     async def read_json_packet(self, timeout: int | None = None) -> tuple[int, JSON]:
         return self.decode_json_packet(await self.read_packet(timeout=timeout or self.timeout))[1]
 
     async def read_pingpong_packet(self, timeout: int | None = None) -> int:
-        return self.decode_pingpong_packet(await self.read_packet(timeout=timeout or self.timeout))[
-            1
-        ]
+        return self.decode_pingpong_packet(
+            await self.read_packet(timeout=timeout or self.timeout)
+        )[1]
 
     async def read_keepalive_packet(self, timeout: int | None = None) -> int:
         return self.decode_keepalive_packet(
             await self.read_packet(timeout=timeout or self.timeout)
+        )[1]
+
+    async def read_login_start_packet(
+        self, protocol_version: int, timeout: int | None = None
+    ) -> LoginStart:
+        return self.decode_login_start_packet(
+            await self.read_packet(timeout=timeout or self.timeout),
+            protocol_version=protocol_version,
         )[1]
 
     @asynccontextmanager
@@ -581,7 +661,7 @@ class PacketWriter:
 
     @classmethod
     def encode_request_packet(cls) -> bytes:
-        return cls.encode_packet(0, b"")
+        return cls.encode_packet(PacketType.REQUEST, b"")
 
     @classmethod
     def encode_json_packet(cls, packet_id: int, payload: JSON) -> bytes:
@@ -594,6 +674,16 @@ class PacketWriter:
     @classmethod
     def encode_keepalive_packet(cls, keepalive_id: int) -> bytes:
         return cls.encode_packet(31, struct.pack(">q", keepalive_id))
+
+    @classmethod
+    def encode_login_start_packet(
+        cls, username: str, player_id: uuid.UUID | None = None, extra_data: bytes = b""
+    ) -> bytes:
+        """Encode Login Start, preserving opaque version-specific fields."""
+        return cls.encode_packet(
+            PacketType.LOGIN_START,
+            cls.encode_string(username) + (player_id.bytes if player_id else b"") + extra_data,
+        )
 
     ############################################################################################################
 

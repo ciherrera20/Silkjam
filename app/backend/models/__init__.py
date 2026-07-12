@@ -1,4 +1,5 @@
 from backend.models.config import SUBDOMAIN_REGEX, Config
+from backend.models.mojang_api import UserProfile
 from backend.models.proxy_listing import ProxyListing
 from backend.models.server_listing import (
     UNKNOWN_VERSION,
@@ -21,4 +22,5 @@ __all__ = (
     "SUBDOMAIN_REGEX",
     "Config",
     "ServerProperties",
+    "UserProfile",
 )
