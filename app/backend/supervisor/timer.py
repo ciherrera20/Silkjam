@@ -8,6 +8,7 @@ from backend.supervisor.base_unit import BaseUnit
 
 logger = logging.getLogger(__name__)
 
+
 class Timer(BaseUnit):
     def __init__(self, timeout: int | float | None):
         super().__init__()
@@ -53,7 +54,12 @@ class Timer(BaseUnit):
     async def _start(self) -> None:
         self._start_time = time.perf_counter()
 
-    async def _stop(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None) -> None:
+    async def _stop(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         del self._start_time
 
     async def run(self) -> None:
@@ -64,11 +70,11 @@ class Timer(BaseUnit):
                     asyncio.wait(
                         (
                             asyncio.create_task(self._timeout_changed.wait()),
-                            asyncio.create_task(self._remaining_changed.wait())
+                            asyncio.create_task(self._remaining_changed.wait()),
                         ),
-                        return_when=asyncio.FIRST_COMPLETED
+                        return_when=asyncio.FIRST_COMPLETED,
                     ),
-                    self.remaining
+                    self.remaining,
                 )
                 if self._timeout_changed.is_set():
                     logger.debug("Timeout changed to %ss", self.timeout)

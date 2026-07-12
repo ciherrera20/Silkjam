@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 Port = Annotated[int, Field(gt=0, le=65535)]
 
+
 class ProxyListing(BaseModel):
     port: Port
     enabled: bool

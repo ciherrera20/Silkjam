@@ -23,18 +23,16 @@ logger = logging.getLogger(__name__)
 type Handshake = LegacyPingRequest | HandshakeRequest
 
 DOMAIN: str = os.environ["DOMAIN"]
-DOMAIN_REGEX: re.Pattern[str] = re.compile(rf"(?:({SUBDOMAIN_REGEX.pattern})\.)?{re.escape(DOMAIN)}")
+DOMAIN_REGEX: re.Pattern[str] = re.compile(
+    rf"(?:({SUBDOMAIN_REGEX.pattern})\.)?{re.escape(DOMAIN)}"
+)
 HOLD_TIMEOUT: int = 25
+
 
 class MCProxy(BaseUnit):
     BUFFER_SIZE = 1 << 16  # 64 KiB
 
-    def __init__(
-            self,
-            name: str,
-            backends: dict[str, MCBackend],
-            listing: ProxyListing
-        ):
+    def __init__(self, name: str, backends: dict[str, MCBackend], listing: ProxyListing):
         super().__init__()
         self.name = name
         self.listing = listing
@@ -58,10 +56,8 @@ class MCProxy(BaseUnit):
         del self.proxy_server
 
     async def _identify_backend(
-            self,
-            packet_reader: PacketReader,
-            conn_logger: logging.Logger | logging.LoggerAdapter[Any]
-        ) -> tuple[MCBackend | None, Handshake | None, bool | None]:
+        self, packet_reader: PacketReader, conn_logger: logging.Logger | logging.LoggerAdapter[Any]
+    ) -> tuple[MCBackend | None, Handshake | None, bool | None]:
         backend: MCBackend | None = None
         handshake: Handshake | None = None
         is_legacy_ping: bool | None = None
@@ -74,7 +70,7 @@ class MCProxy(BaseUnit):
                 server_address = handshake.hostname
                 if m := DOMAIN_REGEX.fullmatch(server_address):
                     subdomain = m.group(1) or ""
-                    conn_logger.debug("Identified subdomain: \"%s\"", subdomain)
+                    conn_logger.debug('Identified subdomain: "%s"', subdomain)
                     if subdomain in self.listing.subdomains:
                         # Backend identified with legacy ping
                         server_name = self.listing.subdomains[subdomain]
@@ -82,7 +78,9 @@ class MCProxy(BaseUnit):
                             backend = self.backends[server_name]
                             conn_logger.debug("Found server %s at %s", backend.name, server_address)
                         else:
-                            conn_logger.debug("Backend %s not found, could be disabled or invalid", server_name)
+                            conn_logger.debug(
+                                "Backend %s not found, could be disabled or invalid", server_name
+                            )
                     else:
                         conn_logger.debug("No server found at %s", server_address)
                 else:
@@ -97,15 +95,20 @@ class MCProxy(BaseUnit):
                     server_address = handshake.server_address
                     if m := DOMAIN_REGEX.match(server_address):
                         subdomain = m.group(1) or ""
-                        conn_logger.debug("Identified subdomain: \"%s\"", subdomain)
+                        conn_logger.debug('Identified subdomain: "%s"', subdomain)
                         if subdomain in self.listing.subdomains:
                             # Backend identified with legacy ping
                             server_name = self.listing.subdomains[subdomain]
                             if self.listing.subdomains[subdomain] in self.backends:
                                 backend = self.backends[server_name]
-                                conn_logger.debug("Found server %s at %s", backend.name, server_address)
+                                conn_logger.debug(
+                                    "Found server %s at %s", backend.name, server_address
+                                )
                             else:
-                                conn_logger.debug("Backend %s not found, could be disabled or invalid", server_name)
+                                conn_logger.debug(
+                                    "Backend %s not found, could be disabled or invalid",
+                                    server_name,
+                                )
                         else:
                             conn_logger.debug("No server found at %s", server_address)
                     else:
@@ -119,19 +122,24 @@ class MCProxy(BaseUnit):
         return backend, handshake, is_legacy_ping
 
     async def _handle_handshake(
-            self,
-            backend: MCBackend,
-            handshake: Handshake,
-            is_legacy_ping: bool,
-            packet_reader: PacketReader,
-            packet_writer: PacketWriter,
-            conn_logger: logging.Logger | logging.LoggerAdapter[Any]
-        ) -> None:
+        self,
+        backend: MCBackend,
+        handshake: Handshake,
+        is_legacy_ping: bool,
+        packet_reader: PacketReader,
+        packet_writer: PacketWriter,
+        conn_logger: logging.Logger | logging.LoggerAdapter[Any],
+    ) -> None:
         try:
             if is_legacy_ping:
                 # Respond to legacy ping
                 conn_logger.debug("Responding to client legacy ping")
-                packet_writer.write_legacy_ping_response(backend.version.protocol, backend.version.name, backend.motd, backend.max_players)
+                packet_writer.write_legacy_ping_response(
+                    backend.version.protocol,
+                    backend.version.name,
+                    backend.motd,
+                    backend.max_players,
+                )
                 await packet_writer.drain()
             else:
                 assert isinstance(handshake, HandshakeRequest)
@@ -146,16 +154,14 @@ class MCProxy(BaseUnit):
                             handshake_response_paylod = {
                                 "version": {
                                     "name": backend.version.name,
-                                    "protocol": backend.version.protocol
+                                    "protocol": backend.version.protocol,
                                 },
                                 "players": {
                                     "max": backend.max_players,
                                     "online": backend.online_players,
-                                    "sample": []
-                                },	
-                                "description": {
-                                    "text": backend.motd
-                                }
+                                    "sample": [],
+                                },
+                                "description": {"text": backend.motd},
                             }
                             if backend.icon is not None:
                                 handshake_response_paylod["favicon"] = backend.icon
@@ -171,14 +177,17 @@ class MCProxy(BaseUnit):
                             await packet_writer.drain()
                     elif handshake.next_state == 2:
                         # Backend server is starting, respond with message telling the client to wait
-                        conn_logger.info("Backend server %s not ready yet, sending waking kick message", backend.name)
-                        kick_payload = {
-                            "text": backend.waking_kick_msg
-                        }
+                        conn_logger.info(
+                            "Backend server %s not ready yet, sending waking kick message",
+                            backend.name,
+                        )
+                        kick_payload = {"text": backend.waking_kick_msg}
                         packet_writer.write_json_packet(0, kick_payload)
                         await packet_writer.drain()
                     else:
-                        raise MCProtocolError(b"", f"Unknown next state in handshake: {handshake.next_state}")
+                        raise MCProtocolError(
+                            b"", f"Unknown next state in handshake: {handshake.next_state}"
+                        )
                 except MCProtocolError as err:
                     conn_logger.debug("Error during handshake: %s", err)
                 except ConnectionResetError:
@@ -187,25 +196,27 @@ class MCProxy(BaseUnit):
             conn_logger.exception("Exception caught while handling client handshake: %s", err)
 
     async def _forward_to_backend(
-            self,
-            backend: MCBackend,
-            handshake: Handshake,
-            is_legacy_ping: bool,
-            packet_reader: PacketReader,
-            packet_writer: PacketWriter,
-            conn_logger: logging.Logger | logging.LoggerAdapter[Any]
-        ) -> None:
+        self,
+        backend: MCBackend,
+        handshake: Handshake,
+        is_legacy_ping: bool,
+        packet_reader: PacketReader,
+        packet_writer: PacketWriter,
+        conn_logger: logging.Logger | logging.LoggerAdapter[Any],
+    ) -> None:
         # Forward traffic to actual minecraft server
         conn_logger.debug("Starting port forwarding to %s", backend.name)
         try:
             # Try connecting to the backend server
-            backend_reader, backend_writer = await asyncio.open_connection("0.0.0.0", backend.server_port)
+            backend_reader, backend_writer = await asyncio.open_connection(
+                "0.0.0.0", backend.server_port
+            )
         except ConnectionRefusedError:
             # Backend server should be ready but is refusing connections
-            conn_logger.error("Backend server %s should be ready, but is not accepting connections", backend.name)
-            kick_payload = {
-                "text": f"§4Error connecting to {backend.name}"
-            }
+            conn_logger.error(
+                "Backend server %s should be ready, but is not accepting connections", backend.name
+            )
+            kick_payload = {"text": f"§4Error connecting to {backend.name}"}
             packet_writer.write_json_packet(0, kick_payload)
             await packet_writer.drain()
         else:
@@ -233,12 +244,13 @@ class MCProxy(BaseUnit):
             if player_joining:
                 backend.incr_online_players()
             try:
+
                 async def forward(
-                        initial_data: bytes,
-                        src_reader: asyncio.StreamReader,
-                        dst_writer: asyncio.StreamWriter,
-                        direction_msg: str
-                    ) -> None:
+                    initial_data: bytes,
+                    src_reader: asyncio.StreamReader,
+                    dst_writer: asyncio.StreamWriter,
+                    direction_msg: str,
+                ) -> None:
                     try:
                         if len(initial_data) > 0:
                             dst_writer.write(initial_data)
@@ -251,8 +263,15 @@ class MCProxy(BaseUnit):
                         dst_writer.close()
 
                 await asyncio.gather(
-                    forward(initial_data, packet_reader.reader, backend_writer, f"client -> {backend.name}"), # client -> proxy -> backend
-                    forward(b"", backend_reader, packet_writer.writer, f"{backend.name} -> client"), # backend -> proxy -> client
+                    forward(
+                        initial_data,
+                        packet_reader.reader,
+                        backend_writer,
+                        f"client -> {backend.name}",
+                    ),  # client -> proxy -> backend
+                    forward(
+                        b"", backend_reader, packet_writer.writer, f"{backend.name} -> client"
+                    ),  # backend -> proxy -> client
                 )
             except Exception as err:
                 conn_logger.exception("Exception caught while forwarding to backend: %s", err)
@@ -262,7 +281,9 @@ class MCProxy(BaseUnit):
             if player_joining:
                 backend.decr_online_players()
 
-    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         try:
             ip, port = writer.get_extra_info("peername")
             conn_logger = PrefixLoggerAdapter(self.log, {"ip": ip, "port": port})
@@ -270,7 +291,9 @@ class MCProxy(BaseUnit):
 
             packet_reader = PacketReader(reader, timeout=30)
             packet_writer = PacketWriter(writer, timeout=30)
-            backend, handshake, is_legacy_ping = await self._identify_backend(packet_reader, conn_logger)
+            backend, handshake, is_legacy_ping = await self._identify_backend(
+                packet_reader, conn_logger
+            )
             if backend is not None and handshake is not None and is_legacy_ping is not None:
                 if not backend.mcproc_running():
                     # Start server if a player is trying to join
@@ -286,22 +309,54 @@ class MCProxy(BaseUnit):
                         # Keep client connected until server starts (or fails to start)
                         started = False
                         with suppress(asyncio.TimeoutError):
-                            started = await asyncio.wait_for(backend.mcproc_done_starting(), HOLD_TIMEOUT)
+                            started = await asyncio.wait_for(
+                                backend.mcproc_done_starting(), HOLD_TIMEOUT
+                            )
 
                         if started:
                             # Forward client logging in to backend if it started successfully
                             conn_logger.debug("Backend server started successfully")
-                            await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
+                            await self._forward_to_backend(
+                                backend,
+                                handshake,
+                                is_legacy_ping,
+                                packet_reader,
+                                packet_writer,
+                                conn_logger,
+                            )
                         else:
                             # Respond to client logging in if server failed to start
-                            conn_logger.debug("Backend server failed to start on time, sending waking kick msg")
-                            await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)        
+                            conn_logger.debug(
+                                "Backend server failed to start on time, sending waking kick msg"
+                            )
+                            await self._handle_handshake(
+                                backend,
+                                handshake,
+                                is_legacy_ping,
+                                packet_reader,
+                                packet_writer,
+                                conn_logger,
+                            )
                     else:
                         # Respond to client not logging in while server is sleeping
-                        await self._handle_handshake(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)        
+                        await self._handle_handshake(
+                            backend,
+                            handshake,
+                            is_legacy_ping,
+                            packet_reader,
+                            packet_writer,
+                            conn_logger,
+                        )
                 else:
                     # Backend server is running, forward packets to it regardless of whether the client is logging in or not
-                    await self._forward_to_backend(backend, handshake, is_legacy_ping, packet_reader, packet_writer, conn_logger)
+                    await self._forward_to_backend(
+                        backend,
+                        handshake,
+                        is_legacy_ping,
+                        packet_reader,
+                        packet_writer,
+                        conn_logger,
+                    )
             else:
                 conn_logger.debug("Could not identify backend, closing connection")
         except Exception as err:
@@ -315,4 +370,4 @@ class MCProxy(BaseUnit):
         await self.proxy_server.serve_forever()
 
     def __repr__(self) -> str:
-        return f"MCProxy(\'{self.name}\')"
+        return f"MCProxy('{self.name}')"

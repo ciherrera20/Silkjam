@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 type AsyncPINGClientFactory = Callable[[], AbstractAsyncContextManager[AsyncPINGClient]]
 
+
 class MCStatusChecker(Timer):
     MAX_RETRIES = 3
     RETRY_INTERVAL = 10
@@ -52,7 +53,9 @@ class MCStatusChecker(Timer):
                     self.log.error("Server process not responding to status requests")
                     raise
                 else:
-                    self.log.warning("Server process did not respond to status request, trying again")
+                    self.log.warning(
+                        "Server process did not respond to status request, trying again"
+                    )
                 await asyncio.sleep(self.RETRY_INTERVAL)
             else:
                 self.log.debug("Server process responded to status request")

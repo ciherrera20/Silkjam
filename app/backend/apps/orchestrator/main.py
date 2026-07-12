@@ -21,7 +21,7 @@ else:
 logging.basicConfig(
     level=level,
     format=format,
-    handlers=[logging.StreamHandler(sys.stdout)]  # ensure logs go to stdout for Docker
+    handlers=[logging.StreamHandler(sys.stdout)],  # ensure logs go to stdout for Docker
 )
 logging.getLogger("asyncio").setLevel(logging.WARNING)
 logging.getLogger("core.protocol").setLevel(logging.WARNING)
@@ -32,9 +32,11 @@ logging.getLogger("supervisor.timer").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 logger.info("Logging level is %s", level)
 
+
 @lru_cache(maxsize=1)
 def get_orch() -> MCOrchestrator:
     return MCOrchestrator("/app/data")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
@@ -45,28 +47,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             yield
             task.cancel()
 
+
 app = FastAPI(
     title="Silkjam Orchestrator",
     description="Smooth Minecraft server setup to play with your friends!",
     version="1.0.0",
     lifespan=lifespan,
-    root_path="/api"
+    root_path="/api",
 )
+
 
 @app.get("/", response_class=RedirectResponse, tags=["docs"])
 async def docs_redirect() -> RedirectResponse:
     return RedirectResponse(url="/api/docs")
 
+
 # v1 router
 v1_router = APIRouter(prefix="/v1", tags=["v1"])
 
+
 @v1_router.get("/config")
-async def get_config(orch: MCOrchestrator=Depends(get_orch)) -> Config:
+async def get_config(orch: MCOrchestrator = Depends(get_orch)) -> Config:
     return orch.config
 
+
 @v1_router.websocket("/config")
-async def websocket_config(websocket: WebSocket, orch: MCOrchestrator=Depends(get_orch)) -> None:
+async def websocket_config(websocket: WebSocket, orch: MCOrchestrator = Depends(get_orch)) -> None:
     await websocket.accept()
     await websocket.send_json(orch.config.model_dump(by_alias=True))
+
 
 app.include_router(v1_router)

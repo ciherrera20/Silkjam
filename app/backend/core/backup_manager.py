@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 type AsyncRCONClientFactory = Callable[[], AbstractAsyncContextManager[AsyncRCONClient]]
 
+
 class MCBackupManager(Timer):
     DATE_FMT = "%Y-%m-%d_%H:%M:%S"
     BACKUP_REGEX = re.compile(r".*?(\d+)\.tar\.gz")
@@ -41,12 +42,14 @@ class MCBackupManager(Timer):
         self.properties = properties
         self.arcon_client_factory = arcon_client_factory
         self.log = PrefixLoggerAdapter(logger, {"server": server_name})
-        assert self.properties.interval is not None  # Backup manager is only created if interval is not None
+        # Backup manager is only created if interval is not None
+        assert self.properties.interval is not None
         super().__init__(max(self.MIN_INTERVAL, self.properties.interval * 60))
 
     @property
     def tick_interval(self) -> int:
-        assert self.properties.interval is not None  # Backup manager is only created if interval is not None
+        # Backup manager is only created if interval is not None
+        assert self.properties.interval is not None
         return self.properties.interval * self.TICKS_PER_MINUTE
 
     async def _start(self) -> None:
@@ -77,7 +80,9 @@ class MCBackupManager(Timer):
         return backups
 
     @asynccontextmanager
-    async def autosave_off(self, client: AsyncRCONClient | None = None) -> AsyncGenerator[AsyncRCONClient]:
+    async def autosave_off(
+        self, client: AsyncRCONClient | None = None
+    ) -> AsyncGenerator[AsyncRCONClient]:
         if client is None:
             # Create client if it was not provided and close it when done
             async with self.arcon_client_factory() as client:
@@ -91,7 +96,9 @@ class MCBackupManager(Timer):
             elif "Saving is already turned off" in response:
                 prev_autosave_on = False
             else:
-                raise RuntimeError("save-off command failed with the following response: %s", response)
+                raise RuntimeError(
+                    "save-off command failed with the following response: %s", response
+                )
 
             # Do stuff with auto save off
             yield client
@@ -120,20 +127,29 @@ class MCBackupManager(Timer):
                     self.root / "world",
                     ".",
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
                 )
                 stdout_b, stderr_b = await proc.communicate()
                 stdout = stdout_b.decode("utf-8")
                 stderr = stderr_b.decode("utf-8")
-                self.log.debug("tar process returncode=%s, stdout=%s, stderr=%s", proc.returncode, stdout, stderr)
+                self.log.debug(
+                    "tar process returncode=%s, stdout=%s, stderr=%s",
+                    proc.returncode,
+                    stdout,
+                    stderr,
+                )
 
                 # Check for errors
                 if proc.returncode != 0:
                     # Fatal error ocurred
-                    raise RuntimeError(f"Creating backup {name} failed with return code {proc.returncode} and error message: {stderr}")
+                    raise RuntimeError(
+                        f"Creating backup {name} failed with return code {proc.returncode} and error message: {stderr}"
+                    )
                 elif len(stderr) > 0:
                     # Non fatal error ocurred
-                    self.log.warning("Retrying backup %s: stdout=%s, stderr=%s", name, stdout, stderr)
+                    self.log.warning(
+                        "Retrying backup %s: stdout=%s, stderr=%s", name, stdout, stderr
+                    )
                     await asyncio.sleep(retry_interval)
                 else:
                     # Backup succeeded
@@ -141,7 +157,9 @@ class MCBackupManager(Timer):
                     return
 
             # Loop finished, meaning all retries failed
-            raise RuntimeError(f"Creating backup {name} failed: exceeded the maximum number of backup retries ({max_retries})")
+            raise RuntimeError(
+                f"Creating backup {name} failed: exceeded the maximum number of backup retries ({max_retries})"
+            )
         finally:
             if tmp.is_file():
                 self.log.warning("Removing partial backup %s", tmp.name)
@@ -156,7 +174,9 @@ class MCBackupManager(Timer):
                 # Save all chunks to disk
                 response = await client.command("save-all")
                 if "Saved the game" not in response:
-                    raise RuntimeError("save-all command failed with the following response: %s", response)
+                    raise RuntimeError(
+                        "save-all command failed with the following response: %s", response
+                    )
 
                 # Try creating backup
                 try:
@@ -169,13 +189,15 @@ class MCBackupManager(Timer):
         except Exception as err:
             self.log.exception("Exception caught while creating backup: %s", err)
 
-    def remove_stale_backups(
-        self,
-        backups: list[tuple[int, Path]],
-        total_ticks: int
-    ) -> None:
+    def remove_stale_backups(self, backups: list[tuple[int, Path]], total_ticks: int) -> None:
         # Remove stale backups
-        stale_backups = get_stale_backups(backups, total_ticks, self.properties.max_backups, self.tick_interval, key=lambda backup: backup[0])
+        stale_backups = get_stale_backups(
+            backups,
+            total_ticks,
+            self.properties.max_backups,
+            self.tick_interval,
+            key=lambda backup: backup[0],
+        )
         for _, p in stale_backups:
             self.log.info("Removing stale backup %s", p.name)
             p.unlink(missing_ok=True)
@@ -195,15 +217,24 @@ class MCBackupManager(Timer):
             if len(backups) == 0:
                 self.log.debug("No backups found")
             else:
-                self.log.debug("Ticks since last backup is %s, tick_interval is %s", total_ticks - backups[-1][0], self.tick_interval)
+                self.log.debug(
+                    "Ticks since last backup is %s, tick_interval is %s",
+                    total_ticks - backups[-1][0],
+                    self.tick_interval,
+                )
 
             if self.properties.max_backups > 0:
                 if len(backups) == 0 or (total_ticks - backups[-1][0]) // self.tick_interval > 0:
-                    await self.save_and_backup(f"world_{datetime.now().strftime(self.DATE_FMT)}_{total_ticks}.tar.gz")
+                    await self.save_and_backup(
+                        f"world_{datetime.now().strftime(self.DATE_FMT)}_{total_ticks}.tar.gz"
+                    )
                     self.reset()
                 else:
                     self.log.debug("No backup needed")
-                    self.remaining = max(self.MIN_INTERVAL, (self.tick_interval - (total_ticks - backups[-1][0])) // 20)  # Calculate time until next backup
+                    self.remaining = max(
+                        self.MIN_INTERVAL,
+                        (self.tick_interval - (total_ticks - backups[-1][0])) // 20,
+                    )  # Calculate time until next backup
             else:
                 self.log.debug("Backups disabled")
                 self.timeout = None

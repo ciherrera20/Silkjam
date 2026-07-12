@@ -27,37 +27,49 @@ else:
 logging.basicConfig(
     level=level,
     format=format,
-    handlers=[logging.StreamHandler(sys.stdout)]  # ensure logs go to stdout for Docker
+    handlers=[logging.StreamHandler(sys.stdout)],  # ensure logs go to stdout for Docker
 )
 logging.getLogger("asyncio").setLevel(logging.WARNING)
 logging.getLogger("websockets").setLevel(logging.WARNING)
+
 
 class LogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.args, tuple) and len(record.args) >= 3:
             auth_endpoint = "/api/v1/auth/static"
             endpoint = record.args[2]
-            if isinstance(endpoint, str) and auth_endpoint == endpoint[:len(auth_endpoint)] and record.args[4] in {204, 403}:
+            if (
+                isinstance(endpoint, str)
+                and auth_endpoint == endpoint[: len(auth_endpoint)]
+                and record.args[4] in {204, 403}
+            ):
                 return False
         return True
+
+
 logging.getLogger("uvicorn.access").addFilter(LogFilter())
 
 logger = logging.getLogger(__name__)
 logger.info("Logging level is %s", level)
 
 _config: Config | None = None
+
+
 def get_config() -> Config:
     global _config
     assert _config is not None, "Config not yet created"
     return _config
 
+
 def set_config(config: Config) -> None:
     global _config
     _config = config
 
+
 @lru_cache(maxsize=1)
 def get_config_lock() -> asyncio.Lock:
     return asyncio.Lock()
+
 
 async def update_config(app: FastAPI, config_created: asyncio.Event) -> None:
     path = "/tmp/orchestrator.sock"
@@ -68,7 +80,7 @@ async def update_config(app: FastAPI, config_created: asyncio.Event) -> None:
             await writer.wait_closed()
             logger.info("Established connection to orchestrator")
             break
-        except (ConnectionRefusedError, FileNotFoundError):
+        except ConnectionRefusedError, FileNotFoundError:
             logger.debug("Waiting for orchestrator...")
             await asyncio.sleep(1)
     async with websockets.unix_connect(path, uri="ws://localhost/v1/config") as websocket:
@@ -81,6 +93,7 @@ async def update_config(app: FastAPI, config_created: asyncio.Event) -> None:
             config_created.set()
     logger.warning("Lost connection to orchestrator")
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.config = None
@@ -91,31 +104,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         yield
         task.cancel()
 
+
 app = FastAPI(
     title="Silkjam API",
     description="Smooth Minecraft server setup to play with your friends!",
     version="1.0.0",
     lifespan=lifespan,
-    root_path="/api"
+    root_path="/api",
 )
+
 
 @app.get("/", response_class=RedirectResponse, tags=["docs"])
 async def docs_redirect() -> RedirectResponse:
     return RedirectResponse(url="/api/docs")
 
+
 # v1 router
 v1_router = APIRouter(prefix="/v1", tags=["v1"])
+
 
 @v1_router.get("/auth/static", status_code=204)
 async def auth_static_path(
     x_filepath: Annotated[str, Header()],
-    config: Config=Depends(get_config),
-    config_lock: asyncio.Lock=Depends(get_config_lock)
+    config: Config = Depends(get_config),
+    config_lock: asyncio.Lock = Depends(get_config_lock),
 ) -> None:
     # Make sure path isn't going outside the root path
     relpath: Path = Path(os.path.join("/", x_filepath)[1:])
     if relpath.parts[0] == "..":
-        logger.debug("Rejected path %s (%s) because it tried to leave the root directory", relpath, x_filepath)
+        logger.debug(
+            "Rejected path %s (%s) because it tried to leave the root directory",
+            relpath,
+            x_filepath,
+        )
         raise HTTPException(status_code=403)
 
     path: Path = STATIC_ROOT / relpath
@@ -130,5 +151,6 @@ async def auth_static_path(
                     return
     logger.debug("Forbidding path %s (%s)", relpath, x_filepath)
     raise HTTPException(status_code=403)
+
 
 app.include_router(v1_router)

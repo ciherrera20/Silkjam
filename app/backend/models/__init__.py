@@ -20,5 +20,5 @@ __all__ = (
     "ServerListing",
     "SUBDOMAIN_REGEX",
     "Config",
-    "ServerProperties"
+    "ServerProperties",
 )

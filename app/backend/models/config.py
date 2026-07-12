@@ -10,6 +10,7 @@ from backend.models.server_listing import ServerListing
 
 SUBDOMAIN_REGEX: re.Pattern[str] = re.compile(r"(?:(?!-)[a-zA-Z0-9\-]+\.)*?(?!-)[a-zA-Z0-9\-]+")
 
+
 class Config(BaseModel):
     proxy_listing: dict[str, ProxyListing]
     server_listing: dict[str, ServerListing]
@@ -22,12 +23,14 @@ class Config(BaseModel):
         proxy_ports: set[int] = set()
         for listing in self.proxy_listing.values():
             if listing.port in proxy_ports:
-                listing.errors.append(f"Proxy port \"{listing.port}\" is already taken")
+                listing.errors.append(f'Proxy port "{listing.port}" is already taken')
             for subdomain, server_name in listing.subdomains.items():
                 if subdomain != "" and not SUBDOMAIN_REGEX.fullmatch(subdomain):
-                    listing.errors.append(f"Proxy subdomain \"{subdomain}\" is invalid")
+                    listing.errors.append(f'Proxy subdomain "{subdomain}" is invalid')
                 if server_name not in self.server_listing:
-                    listing.errors.append(f"Proxy subdomain \"{subdomain}\" routes to non-existent server \"{server_name}\"")
+                    listing.errors.append(
+                        f'Proxy subdomain "{subdomain}" routes to non-existent server "{server_name}"'
+                    )
             if listing.valid:
                 proxy_ports.add(listing.port)
         return self
@@ -40,12 +43,8 @@ class Config(BaseModel):
     @classmethod
     def default(cls) -> Self:
         return cls(
-            proxy_listing={"proxy1": ProxyListing(
-                port=25565,
-                enabled=True,
-                subdomains={}
-            )},
-            server_listing={}
+            proxy_listing={"proxy1": ProxyListing(port=25565, enabled=True, subdomains={})},
+            server_listing={},
         )
 
     @classmethod

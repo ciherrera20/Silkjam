@@ -2,8 +2,13 @@ if __name__ == "__main__":
     import os
     import subprocess
     import sys
-    ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True).stdout.decode("utf-8").strip()
-    sys.path.append(os.path.join(ROOT, 'app', 'orchestrator'))
+
+    ROOT = (
+        subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True)
+        .stdout.decode("utf-8")
+        .strip()
+    )
+    sys.path.append(os.path.join(ROOT, "app", "orchestrator"))
 
 import asyncio
 import logging
@@ -15,14 +20,10 @@ from backend.models import Version
 
 logger = logging.getLogger(__name__)
 
-class MCClient(AbstractAsyncContextManager['MCClient']):
+
+class MCClient(AbstractAsyncContextManager["MCClient"]):
     def __init__(
-        self, hostname: str,
-        port: int,
-        version: Version = Version(
-            name="0.0.0",
-            protocol=127
-        )
+        self, hostname: str, port: int, version: Version = Version(name="0.0.0", protocol=127)
     ):
         self.hostname = hostname
         self.port = port
@@ -62,10 +63,18 @@ class MCClient(AbstractAsyncContextManager['MCClient']):
         except ConnectionResetError:
             logger.error("Server %s:%s closed connection unexpectedly", self.hostname, self.port)
         except MCProtocolError as err:
-            logger.error("Could not interpret server %s:%s's response: %s", self.hostname, self.port, err)
+            logger.error(
+                "Could not interpret server %s:%s's response: %s", self.hostname, self.port, err
+            )
         except Exception as err:
-            logger.exception("Exception caught while requesting server %s:%s's status: %s", self.hostname, self.port, err)
+            logger.exception(
+                "Exception caught while requesting server %s:%s's status: %s",
+                self.hostname,
+                self.port,
+                err,
+            )
         return None
+
 
 if __name__ == "__main__":
     import argparse
@@ -73,10 +82,20 @@ if __name__ == "__main__":
 
     from rich_argparse import RichHelpFormatter
 
-    parser = argparse.ArgumentParser(description="Simple Minecraft client that requests a status from a server", formatter_class=RichHelpFormatter)
-    parser.add_argument("host", help="Hostname of the Minecraft server. You may also specify a port using the \":\" character.")
-    parser.add_argument("--verbose", "-v", action="store_true", default=False, help="Enables verbose logging")
-    parser.add_argument("--full", "-f", action="store_true", default=False, help="Output full response")
+    parser = argparse.ArgumentParser(
+        description="Simple Minecraft client that requests a status from a server",
+        formatter_class=RichHelpFormatter,
+    )
+    parser.add_argument(
+        "host",
+        help='Hostname of the Minecraft server. You may also specify a port using the ":" character.',
+    )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true", default=False, help="Enables verbose logging"
+    )
+    parser.add_argument(
+        "--full", "-f", action="store_true", default=False, help="Output full response"
+    )
     args = parser.parse_args()
 
     if ":" in args.host:
@@ -92,7 +111,7 @@ if __name__ == "__main__":
     else:
         level = logging.ERROR
     logging.basicConfig(level=level, format="%(message)s")
-    
+
     async def request_status() -> dict[str, Any] | None:
         async with MCClient(host, port) as client:
             return await client.request_status(timeout=30)
@@ -103,5 +122,5 @@ if __name__ == "__main__":
             if not args.full and "favicon" in status and len(status["favicon"]) > 100:
                 status["favicon"] = status["favicon"][:97] + "..."
             print(json.dumps(status, indent=4))
-    except Exception: 
+    except Exception:
         sys.exit(1)

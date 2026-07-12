@@ -16,8 +16,10 @@ logger = logging.getLogger(__name__)
 MINECRAFT_PORT = os.environ.get("MINECRAFT_PORT", 25565)
 SERVER_PORTS = os.environ.get("SERVER_PORTS", "40000:45000")
 
+
 class AcquirePortError(RuntimeError):
     pass
+
 
 class MCOrchestrator(Supervisor):
     def __init__(self, root: str | Path):
@@ -27,7 +29,8 @@ class MCOrchestrator(Supervisor):
 
         # Proxy and server listings
         self.config: Config
-        self._config_changed = asyncio.Event()  # Notify run_servers whenever the server listing changes
+        # Notify run_servers whenever the server listing changes
+        self._config_changed = asyncio.Event()
 
         self.proxies: dict[str, MCProxy] = {}  # Proxy name -> MCProxy object
         self.backends: dict[str, MCBackend] = {}  # Server name -> MCBackend object
@@ -82,7 +85,10 @@ class MCOrchestrator(Supervisor):
             if proxy_name not in self.proxies:
                 logger.info("Found proxy listing entry %s", proxy_name)
                 if not proxy_listing.valid:
-                    logger.error("Skipping invalid proxy listing entry %s with the following error(s):", proxy_name)
+                    logger.error(
+                        "Skipping invalid proxy listing entry %s with the following error(s):",
+                        proxy_name,
+                    )
                     for msg in proxy_listing.errors:
                         logger.error(msg)
                 elif not proxy_listing.enabled:
@@ -108,7 +114,10 @@ class MCOrchestrator(Supervisor):
             if backend_name not in self.backends:
                 logger.info("Found server listing entry %s", backend_name)
                 if not server_listing.valid:
-                    logger.error("Skipping invalid server listing entry %s with the following error(s):", backend_name)
+                    logger.error(
+                        "Skipping invalid server listing entry %s with the following error(s):",
+                        backend_name,
+                    )
                     for msg in server_listing.errors:
                         logger.error(msg)
                 elif not server_listing.enabled:
@@ -119,11 +128,16 @@ class MCOrchestrator(Supervisor):
                         self.root / "servers" / backend_name,
                         self.acquire_port,
                         server_listing,
-                        self
+                        self,
                     )
                     backend.on_listing_change(self.update_config)
                     self.backends[backend_name] = backend
-                    self.add_unit(backend, restart=False, stopped=server_listing.sleep_properties.timeout is not None and server_listing.version != UNKNOWN_VERSION)
+                    self.add_unit(
+                        backend,
+                        restart=False,
+                        stopped=server_listing.sleep_properties.timeout is not None
+                        and server_listing.version != UNKNOWN_VERSION,
+                    )
 
         # Cleanup any servers in the listing that no longer exist
         removed_backend_names = set()
@@ -137,7 +151,9 @@ class MCOrchestrator(Supervisor):
     async def run(self) -> None:
         while True:
             # Wait until the config changes or a proxy or server task is canceled or errors out
-            (done_events, done_units), (_, _) = await self.supervise_until([self._config_changed], return_when=Supervisor.FIRST_EVENT_OR_UNIT)
+            (done_events, done_units), (_, _) = await self.supervise_until(
+                [self._config_changed], return_when=Supervisor.FIRST_EVENT_OR_UNIT
+            )
             if self._config_changed in done_events:
                 logger.debug("Config change requested")
                 self.reload_config()
