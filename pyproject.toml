@@ -10,6 +10,7 @@ dependencies = [
     "mctools",
     "nbtlib",
     "jsondiff",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]
