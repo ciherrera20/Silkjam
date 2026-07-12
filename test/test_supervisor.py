@@ -5,7 +5,6 @@ from typing import Any
 from backend.supervisor import BaseUnit, Supervisor
 from backend.utils.logger_adapters import PrefixLoggerAdapter
 
-
 logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":

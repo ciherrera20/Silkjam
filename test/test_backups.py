@@ -1,5 +1,5 @@
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from backend.utils.backup_strategies import format_backups, get_stale_backups
 
