@@ -1,7 +1,9 @@
 from typing import Annotated
-from pydantic import BaseModel, PrivateAttr, Field
+
+from pydantic import BaseModel, Field, PrivateAttr
 
 Port = Annotated[int, Field(gt=0, le=65535)]
+
 
 class ProxyListing(BaseModel):
     port: Port
@@ -12,9 +14,9 @@ class ProxyListing(BaseModel):
     _errors: list[str] = PrivateAttr(default_factory=list)
 
     @property
-    def valid(self):
+    def valid(self) -> bool:
         return len(self._errors) == 0
 
     @property
-    def errors(self):
+    def errors(self) -> list[str]:
         return self._errors

@@ -1,38 +1,32 @@
 import asyncio
-from contextlib import suppress
 import logging
+from typing import Any
+
+from backend.supervisor import BaseUnit, Supervisor
+from backend.utils.logger_adapters import PrefixLoggerAdapter
+
 logger = logging.getLogger(__name__)
 
-
-#
-# Project imports
-#
-import os, sys, subprocess
-ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True).stdout.decode("utf-8").strip()
-sys.path.append(os.path.join(ROOT, "app", "backend"))
-from supervisor import Supervisor, BaseUnit
-from utils.logger_adapters import PrefixLoggerAdapter
-
 if __name__ == "__main__":
-    import time
     import random
+    import time
 
     class Unit(BaseUnit):
-        def __init__(self, name):
+        def __init__(self, name: str) -> None:
             super().__init__()
             self.name = name
-            self.log = PrefixLoggerAdapter(logger, name)
+            self.log = PrefixLoggerAdapter(logger, {"unit": name})
 
-        async def _start(self):
+        async def _start(self) -> None:
             self.log.info("Entering")
             self._started = True
             await asyncio.sleep(1)
 
-        async def _stop(self, *args):
+        async def _stop(self, *args: Any) -> None:
             self.log.info("Exiting")
             await asyncio.sleep(1)
 
-        async def run(self):
+        async def run(self) -> None:
             i = 1
             while True:
                 self.log.info("Working... [%s]", i)
@@ -42,20 +36,20 @@ if __name__ == "__main__":
                 #     raise Exception("Uh oh, something went wrong")
                 i += 1
 
-        async def runfunc1(self):
+        async def runfunc1(self) -> None:
             while True:
                 self.log.info("Running runfunc 1...")
                 await asyncio.sleep(1)
 
-        async def runfunc2(self):
+        async def runfunc2(self) -> None:
             while True:
                 self.log.info("Running runfunc 2...")
                 await asyncio.sleep(1)
 
-        def __repr__(self):
+        def __repr__(self) -> str:
             return f"Unit(\'{self.name}\')"
 
-    async def main():
+    async def main() -> Supervisor:
         start_time = time.perf_counter()
         supervisor = Supervisor()
         async with supervisor:

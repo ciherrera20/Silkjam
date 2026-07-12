@@ -1,6 +1,58 @@
-import jproperties
+import logging
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
+
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ServerPropertiesLine:
+    key: str | None
+    value: str
+
+
+def parse_properties(path: Path) -> tuple[dict[str, str], list[ServerPropertiesLine]]:
+    """Parse a Minecraft server.properties file."""
+
+    properties: dict[str, str] = {}
+    layout: list[ServerPropertiesLine] = []
+
+    with path.open(encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.rstrip("\n")
+
+            stripped = line.strip()
+
+            # Preserve blank lines.
+            if not stripped:
+                layout.append(ServerPropertiesLine(None, ""))
+                continue
+
+            # Preserve comments.
+            if stripped.startswith("#"):
+                layout.append(ServerPropertiesLine(None, line))
+                continue
+
+            key, sep, value = line.partition("=")
+            if not sep:
+                logger.warning("Incomplete property line: %s", line)
+                layout.append(ServerPropertiesLine(None, line))
+                continue
+
+            key = key.strip()
+            value = value.strip()
+
+            if key in properties:
+                logger.warning("Duplicate key %s, last value will be kept", key)
+
+            properties[key] = value
+            layout.append(ServerPropertiesLine(key, value))
+
+    return properties, layout
+
 
 class ServerProperties(BaseModel):
     motd: str
@@ -11,38 +63,58 @@ class ServerProperties(BaseModel):
     enable_rcon: bool = Field(alias="enable-rcon")
 
     @classmethod
-    def default(cls):
-        return cls(**{
-            "motd": "A Minecraft Server",
-            "max-players": 20,
-            "server-port": None,
-            "rcon.port": None,
-            "rcon.password": None,
-            "enable-rcon": True
-        })
+    def default(cls) -> Self:
+        return cls.model_construct(
+            _fields_set=None,
+            **{
+                "motd": "A Minecraft Server",
+                "max-players": 20,
+                "server-port": None,
+                "rcon.port": None,
+                "rcon.password": None,
+                "enable-rcon": True,
+            },
+        )
 
     @classmethod
-    def load(cls, path: Path):
+    def load(cls, path: Path) -> Self:
         path.touch(exist_ok=True)
+
         if path.stat().st_size > 0:
-            props = jproperties.Properties()
-            props.load(path.read_text())
-            config = cls.model_validate({k: v.data for k, v in props.items()}, by_alias=True)
+            props, _ = parse_properties(path)
+            config = cls.model_validate(props, by_alias=True)
         else:
             config = cls.default()
             config.dump(path)
+
         return config
 
-    def dump(self, path: Path):
-        props = jproperties.Properties()
-        if path.stat().st_size > 0:
-            props.load(path.read_text())
-        for k, v in self.model_dump(by_alias=True).items():
-            if isinstance(v, bool):
-                props[k] = str(v).lower()
-            elif v is None:
-                props[k] = ""
-            else:
-                props[k] = str(v)
-        with path.open("wb") as f:
-            props.store(f)
+    def dump(self, path: Path) -> None:
+        values = {
+            key: (
+                ""
+                if value is None
+                else str(value).lower()
+                if isinstance(value, bool)
+                else str(value)
+            )
+            for key, value in self.model_dump(by_alias=True).items()
+        }
+        _, layout = parse_properties(path)
+
+        seen: set[str] = set()
+
+        with path.open("w", encoding="utf-8", newline="\n") as f:
+            for line in layout:
+                if line.key is None:
+                    f.write(line.value + "\n")
+                    continue
+
+                value = values.get(line.key, line.value)
+                f.write(f"{line.key}={value}\n")
+                seen.add(line.key)
+
+            # Append newly-added properties.
+            for key, value in values.items():
+                if key not in seen:
+                    f.write(f"{key}={value}\n")

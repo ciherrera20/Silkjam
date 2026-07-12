@@ -1,20 +1,21 @@
-import time
 import asyncio
-from contextlib import suppress
 import logging
+import time
+from contextlib import suppress
+from types import TracebackType
 
-#
-# Project imports
-#
-from .base_unit import BaseUnit
+from backend.supervisor.base_unit import BaseUnit
 
 logger = logging.getLogger(__name__)
 
+
 class Timer(BaseUnit):
-    def __init__(self, timeout):
+    def __init__(self, timeout: int | float | None):
         super().__init__()
+        if isinstance(timeout, int):
+            timeout = float(timeout)
         self._timeout: float | None = timeout
-        self._start_time: float | None
+        self._start_time: float
 
         self._timeout_changed = asyncio.Event()
         self._remaining_changed = asyncio.Event()
@@ -46,16 +47,22 @@ class Timer(BaseUnit):
         else:
             return None
 
-    def reset(self):
-        self.remaining = self.timeout
+    def reset(self) -> None:
+        if self.timeout is not None:
+            self.remaining = self.timeout
 
-    async def _start(self):
+    async def _start(self) -> None:
         self._start_time = time.perf_counter()
 
-    async def _stop(self, *args):
+    async def _stop(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         del self._start_time
 
-    async def run(self):
+    async def run(self) -> None:
         with suppress(asyncio.TimeoutError):
             while self.remaining is None or self.remaining > 0:
                 logger.debug("Time remaining is %ss", self.remaining)
@@ -63,11 +70,11 @@ class Timer(BaseUnit):
                     asyncio.wait(
                         (
                             asyncio.create_task(self._timeout_changed.wait()),
-                            asyncio.create_task(self._remaining_changed.wait())
+                            asyncio.create_task(self._remaining_changed.wait()),
                         ),
-                        return_when=asyncio.FIRST_COMPLETED
+                        return_when=asyncio.FIRST_COMPLETED,
                     ),
-                    self.remaining
+                    self.remaining,
                 )
                 if self._timeout_changed.is_set():
                     logger.debug("Timeout changed to %ss", self.timeout)
@@ -77,5 +84,5 @@ class Timer(BaseUnit):
                     self._remaining_changed.clear()
         logger.debug("Timer done")
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Timer({self.timeout})"

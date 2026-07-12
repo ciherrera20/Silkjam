@@ -1,24 +1,25 @@
+import asyncio
+import base64
+import logging
 import re
 import signal
-import base64
-import asyncio
-import logging
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractContextManager, asynccontextmanager, suppress
 from pathlib import Path
-from contextlib import suppress, AbstractContextManager, asynccontextmanager
+from typing import Any
+
 from mctools import AsyncPINGClient, AsyncRCONClient
 
-#
-# Project imports
-#
-from supervisor import Supervisor, Timer
-from utils.logger_adapters import PrefixLoggerAdapter
-from models import ServerListing, Version, ServerProperties
-from core.backup_manager import MCBackupManager
-from core.status_checker import MCStatusChecker
+from backend.core.backup_manager import MCBackupManager
+from backend.core.status_checker import MCStatusChecker
+from backend.models import ServerListing, ServerProperties, Version
+from backend.supervisor import Supervisor, Timer
+from backend.utils.logger_adapters import PrefixLoggerAdapter
 
 logger = logging.getLogger(__name__)
 
-type PortCMFactory = callable[[], AbstractContextManager[int]]
+type PortCMFactory = Callable[[], AbstractContextManager[int]]
+
 
 class MCBackend(Supervisor):
     STARTING_SERVER_REGEX = re.compile(rb"^.*:(\d{5}).*$")
@@ -34,9 +35,9 @@ class MCBackend(Supervisor):
         port_factory: PortCMFactory,
         listing: ServerListing,
         supervisor: Supervisor,
-        stop_timeout: int=90,
-        sigint_timeout: int=90,
-        sigterm_timeout: int=90
+        stop_timeout: int = 90,
+        sigint_timeout: int = 90,
+        sigterm_timeout: int = 90,
     ):
         super().__init__()
         self.name = name
@@ -50,7 +51,7 @@ class MCBackend(Supervisor):
         self.log = PrefixLoggerAdapter(logger, {"server": self.name})
 
         self.properties = ServerProperties.load(self.root / "server.properties")
-        self.icon = None
+        self.icon: str | None = None
 
         self.server_proc: asyncio.subprocess.Process
 
@@ -79,51 +80,51 @@ class MCBackend(Supervisor):
         self._online_player_change: asyncio.Event = asyncio.Event()
         self._online_player_change.set()
 
-        self.listing_change_cb = None
+        self.listing_change_cb: Callable[[], None] | None = None
 
     @property
-    def version(self):
+    def version(self) -> Version:
         return self.listing.version
 
     @property
-    def server_port(self):
+    def server_port(self) -> int | None:
         return self.properties.server_port
 
     @property
-    def rcon_port(self):
+    def rcon_port(self) -> int | None:
         return self.properties.rcon_port
 
     @property
-    def motd(self):
+    def motd(self) -> str:
         if self.mcproc_running():
             return self.properties.motd
         else:
             return self.listing.sleep_properties.motd or f"§e{self.properties.motd}"
 
     @property
-    def online_players(self):
+    def online_players(self) -> int:
         if self.mcproc_running():
             return self._online_players
         else:
             return 0
 
     @online_players.setter
-    def online_players(self, value):
+    def online_players(self, value: int) -> None:
         self._online_players = value
         self._online_player_change.set()
 
     @property
-    def max_players(self):
+    def max_players(self) -> int:
         return self.properties.max_players
 
     @property
-    def waking_kick_msg(self):
+    def waking_kick_msg(self) -> str:
         return self.listing.sleep_properties.waking_kick_msg
 
-    def on_listing_change(self, cb):
+    def on_listing_change(self, cb: Callable[[], None] | None) -> None:
         self.listing_change_cb = cb
 
-    def update_stats(self, stats):
+    def update_stats(self, stats: dict[str, Any]) -> None:
         self.online_players = stats["players"]["online"]
         version = Version(**stats["version"])
         if self.listing.version != version:
@@ -131,7 +132,7 @@ class MCBackend(Supervisor):
             if self.listing_change_cb is not None:
                 self.listing_change_cb()
 
-    async def _start(self):
+    async def _start(self) -> None:
         await super()._start()
 
         # Open and read icon if it exists
@@ -151,24 +152,37 @@ class MCBackend(Supervisor):
         self.properties.server_port = server_port
         self.properties.rcon_port = rcon_port
         self.properties.enable_rcon = True
+        self.properties.rcon_password = (
+            "admin" if not self.properties.rcon_password else self.properties.rcon_password
+        )
         self.properties.dump(self.root / "server.properties")
 
         # Start upstream server subprocess
         server_jar_file = self.root / "server.jar"
         self.server_proc = await asyncio.create_subprocess_exec(
-            "java", "-Xmx2G", "-jar", server_jar_file, "nogui",
+            "java",
+            "-Xmx2G",
+            "-jar",
+            server_jar_file,
+            "nogui",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=self.root
+            cwd=self.root,
         )
         self.log.info("Starting minecraft server process with pid %s", self.server_proc.pid)
 
         # Wait until server is done initializing
         async with asyncio.TaskGroup() as tg:
-            log_stderr_task = tg.create_task(self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL))
+            assert self.server_proc.stderr is not None  # We create it with a pipe
+            log_stderr_task = tg.create_task(
+                self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL)
+            )
             wait_until_done_initializing_task = tg.create_task(self.wait_until_done_initializing())
-            done, pending = await asyncio.wait([wait_until_done_initializing_task, log_stderr_task], return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait(
+                [wait_until_done_initializing_task, log_stderr_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
             if log_stderr_task in done:
                 self.log.error("Server process closed stderr while starting")
             if wait_until_done_initializing_task in pending:
@@ -183,12 +197,21 @@ class MCBackend(Supervisor):
         self.start_unit_nowait(self.status_checker)
         self.start_unit_nowait(self.backup_manager)
 
-    async def _stop(self, *args):
+    async def _stop(self, *args: Any) -> None:
         # Stop running units
         await super()._stop(*args)
 
-        log_stdout_task = asyncio.create_task(self.log_pipe(self.server_proc.stdout, self.STDOUT_LOG_LEVEL))
-        log_stderr_task = asyncio.create_task(self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL))
+        # We always create the process with pipes
+        assert self.server_proc.stdin is not None
+        assert self.server_proc.stdout is not None
+        assert self.server_proc.stderr is not None
+
+        log_stdout_task = asyncio.create_task(
+            self.log_pipe(self.server_proc.stdout, self.STDOUT_LOG_LEVEL)
+        )
+        log_stderr_task = asyncio.create_task(
+            self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL)
+        )
 
         try:
             self.log.info("Closing minecraft server process")
@@ -197,9 +220,11 @@ class MCBackend(Supervisor):
                 self.log.debug("Minecraft server process has already exited")
 
             if not shutdown:
-                with suppress(asyncio.TimeoutError):
+                with suppress(TimeoutError):
                     # Send stop command and wait before progressing to SIGINT
-                    self.log.debug("Sending stop command to minecraft server process %s", self.server_proc.pid)
+                    self.log.debug(
+                        "Sending stop command to minecraft server process %s", self.server_proc.pid
+                    )
                     self.server_proc.stdin.write(b"stop\n")
                     await self.server_proc.stdin.drain()
                     await asyncio.wait_for(self.server_proc.wait(), self.stop_timeout)
@@ -207,18 +232,22 @@ class MCBackend(Supervisor):
                     self.log.debug("Minecraft server process exited after stop command")
 
             if not shutdown:
-                with suppress(asyncio.TimeoutError):
+                with suppress(TimeoutError):
                     # Send SIGINT and wait before progressing to SIGTERM
-                    self.log.debug("Sending SIGINT to minecraft server process %s", self.server_proc.pid)
+                    self.log.debug(
+                        "Sending SIGINT to minecraft server process %s", self.server_proc.pid
+                    )
                     self.server_proc.send_signal(signal.SIGINT)
                     await asyncio.wait_for(self.server_proc.wait(), self.sigint_timeout)
                     shutdown = True
                     self.log.debug("Minecraft server process exited after SIGINT")
 
             if not shutdown:
-                with suppress(asyncio.TimeoutError):
+                with suppress(TimeoutError):
                     # Send SIGTERM and wait before progressing to SIGKILL
-                    self.log.debug("Sending SIGTERM to minecraft server process %s", self.server_proc.pid)
+                    self.log.debug(
+                        "Sending SIGTERM to minecraft server process %s", self.server_proc.pid
+                    )
                     self.server_proc.send_signal(signal.SIGTERM)
                     await asyncio.wait_for(self.server_proc.wait(), self.sigterm_timeout)
                     shutdown = True
@@ -228,7 +257,9 @@ class MCBackend(Supervisor):
                 shutdown = self.server_proc.returncode is not None
                 if not shutdown:
                     # Send SIGKILL
-                    self.log.debug("Sending SIGKILL to minecraft server process %s", self.server_proc.pid)
+                    self.log.debug(
+                        "Sending SIGKILL to minecraft server process %s", self.server_proc.pid
+                    )
                     self.server_proc.send_signal(signal.SIGKILL)
                     self.log.debug("Minecraft server process exited after SIGKILL")
 
@@ -236,11 +267,14 @@ class MCBackend(Supervisor):
         if self.server_proc.returncode == 0:
             self.log.info("Minecraft server exited successfully")
         else:
-            self.log.warning("Minecraft server exited with nonzero exit code: %s", self.server_proc.returncode)
+            self.log.warning(
+                "Minecraft server exited with nonzero exit code: %s", self.server_proc.returncode
+            )
 
         await asyncio.gather(log_stdout_task, log_stderr_task)
 
-    async def read_stdout_until_done_initializing(self):
+    async def read_stdout_until_done_initializing(self) -> None:
+        assert self.server_proc.stdout is not None  # We always create the server process with pipes
         async for msg in self.server_proc.stdout:
             self.log.log(self.STDOUT_LOG_LEVEL, msg.decode("utf-8"))
             if m := self.STARTING_SERVER_REGEX.match(msg):
@@ -254,9 +288,12 @@ class MCBackend(Supervisor):
                 self.log.debug("Read done msg")
                 break
 
-    async def ping_server_until_done_initializing(self, ping_interval=5):
+    async def ping_server_until_done_initializing(self, ping_interval: float = 5) -> None:
         while True:
             self.log.debug("Sending ping...")
+            assert (
+                self.properties.server_port is not None
+            )  # We always write a server port to server properties before starting
             async with AsyncPINGClient("0.0.0.0", self.properties.server_port) as client:
                 with suppress(Exception):
                     await client.ping()
@@ -264,28 +301,37 @@ class MCBackend(Supervisor):
             await asyncio.sleep(ping_interval)
         self.log.debug("Received ping response")
 
-    async def wait_until_done_initializing(self, stdout_timeout=300, ping_timeout=60, ping_interval=5):
+    async def wait_until_done_initializing(
+        self, stdout_timeout: float = 300, ping_timeout: float = 60, ping_interval: float = 5
+    ) -> None:
         try:
             await asyncio.wait_for(self.read_stdout_until_done_initializing(), stdout_timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.log.error("Did not receive server started log")
             raise
 
         try:
-            await asyncio.wait_for(self.ping_server_until_done_initializing(ping_interval), ping_timeout)
-        except asyncio.TimeoutError:
+            await asyncio.wait_for(
+                self.ping_server_until_done_initializing(ping_interval), ping_timeout
+            )
+        except TimeoutError:
             self.log.error("Could not ping server")
             raise
         self.log.debug("Server finished initializing")
 
-    async def log_pipe(self, pipe: asyncio.StreamReader, level=logging.DEBUG):
+    async def log_pipe(self, pipe: asyncio.StreamReader, level: int = logging.DEBUG) -> None:
         async for msg in pipe:
             self.log.log(level, msg.decode("utf-8"))
 
-    async def request_status_continuously(self, interval=60, retry_interval=10, max_retries=3):
+    async def request_status_continuously(
+        self, interval: float = 60, retry_interval: float = 10, max_retries: int = 3
+    ) -> None:
         retry_count = 0
         while True:
             try:
+                assert (
+                    self.properties.server_port is not None
+                )  # We always write a server port to server properties before starting
                 async with AsyncPINGClient("0.0.0.0", self.properties.server_port) as client:
                     stats = await client.get_stats()
             except Exception:
@@ -294,7 +340,9 @@ class MCBackend(Supervisor):
                     self.log.error("Server process not responding to status requests")
                     raise
                 else:
-                    self.log.warning("Server process did not respond to status request, trying again")
+                    self.log.warning(
+                        "Server process did not respond to status request, trying again"
+                    )
                 await asyncio.sleep(retry_interval)
             else:
                 self.log.debug("Server process responded to status request")
@@ -303,34 +351,50 @@ class MCBackend(Supervisor):
                 await asyncio.sleep(interval)
 
     @asynccontextmanager
-    async def aping_client_factory(self):
+    async def aping_client_factory(self) -> AsyncGenerator[AsyncPINGClient]:
+        assert (
+            self.properties.server_port is not None
+        )  # We always write a server port to server properties before starting
         async with AsyncPINGClient("0.0.0.0", self.properties.server_port) as client:
             yield client
 
     @asynccontextmanager
-    async def arcon_client_factory(self):
+    async def arcon_client_factory(self) -> AsyncGenerator[AsyncRCONClient]:
+        assert (
+            self.properties.rcon_port is not None
+        )  # We always write an RCON port to server properties before starting
+        assert (
+            self.properties.rcon_password is not None
+        )  # We always write an RCON password to server properties before starting
         async with AsyncRCONClient("0.0.0.0", self.properties.rcon_port) as client:
             await client.login(self.properties.rcon_password)
             yield client
 
-    async def supervise(self):
+    async def supervise(self) -> None:
         while True:
             # Wait until the config changes or a proxy or server task is canceled or errors out
-            (done_events, done_units), (_, _) = await self.supervise_until([self._online_player_change])
+            (done_events, done_units), (_, _) = await self.supervise_until(
+                [self._online_player_change]
+            )
             if self._online_player_change in done_events:
                 if self.online_players == 0:
                     if self.is_stopped(self.sleep_timer):
-                        # The timer expired and triggered a status check, which confirmed that no players are connected
-                        self.log.info("No players connected for %ss, stopping server", self.listing.sleep_properties.timeout)
+                        # The timer expired and the status check found no players connected.
+                        self.log.info(
+                            "No players connected for %ss, stopping server",
+                            self.listing.sleep_properties.timeout,
+                        )
                         self.supervisor.stop_unit_nowait(self)
                     elif self.sleep_timer.timeout is None:
                         # Reset sleep timer if it is suspended
-                        self.log.debug("Setting sleep timer for %ss", self.listing.sleep_properties.timeout)
+                        self.log.debug(
+                            "Setting sleep timer for %ss", self.listing.sleep_properties.timeout
+                        )
                         self.sleep_timer.timeout = self.listing.sleep_properties.timeout
                         self.sleep_timer.reset()
                 else:
                     if self.is_stopped(self.sleep_timer):
-                        # The timer expired and triggered a status check, which found that there are still players online
+                        # The timer expired and the status check found players online.
                         self.start_unit_nowait(self.sleep_timer)
                     if self.sleep_timer.timeout is not None:
                         self.log.debug("Suspending sleep timer")
@@ -343,45 +407,57 @@ class MCBackend(Supervisor):
                 err = done_units[self.status_checker]
                 raise RuntimeError("Server stopped responding") from err
 
-    async def run(self):
+    async def run(self) -> None:
         self.log.debug("Starting server process monitor task for pid %s", self.server_proc.pid)
         async with asyncio.TaskGroup() as tg:
             supervise_task = tg.create_task(self.supervise())
             async with asyncio.TaskGroup() as proc_tg:
+                # We always create the server process with pipes
+                assert self.server_proc.stdout is not None
+                assert self.server_proc.stderr is not None
                 proc_tg.create_task(self.log_pipe(self.server_proc.stdout, self.STDOUT_LOG_LEVEL))
                 proc_tg.create_task(self.log_pipe(self.server_proc.stderr, self.STDERR_LOG_LEVEL))
             self.log.debug("Server process (pid %s) stopped communication", self.server_proc.pid)
             supervise_task.cancel()
 
-    def mcproc_starting(self):
-        return self.supervisor.is_starting(self)
+    def mcproc_starting(self) -> bool:
+        starting = self.supervisor.is_starting(self)
+        # Self is always set as a unit on the supervisor on construction
+        assert starting is not None
+        return starting
 
-    def mcproc_running(self):
-        return self.supervisor.is_running(self)
+    def mcproc_running(self) -> bool:
+        running = self.supervisor.is_running(self)
+        # Self is always set as a unit on the supervisor on construction
+        assert running is not None
+        return running
 
-    def mcproc_stopping(self):
-        return self.supervisor.is_stopping(self)
+    def mcproc_stopping(self) -> bool:
+        stopping = self.supervisor.is_stopping(self)
+        # Self is always set as a unit on the supervisor on construction
+        assert stopping is not None
+        return stopping
 
-    async def mcproc_done_starting(self):
+    async def mcproc_done_starting(self) -> bool:
         await self.supervisor.done_stopping(self)
         self.supervisor.start_unit_nowait(self)
         return await self.supervisor.done_starting(self)
 
-    async def mcproc_done_stopping(self):
+    async def mcproc_done_stopping(self) -> bool:
         self.supervisor.stop_unit_nowait(self)
         return await self.supervisor.done_stopping(self)
 
-    def start_mcproc(self):
+    def start_mcproc(self) -> None:
         self.supervisor.start_unit_nowait(self)
 
-    def stop_mcproc(self):
+    def stop_mcproc(self) -> None:
         self.supervisor.stop_unit_nowait(self)
 
-    def incr_online_players(self):
+    def incr_online_players(self) -> None:
         self.online_players += 1
 
-    def decr_online_players(self):
+    def decr_online_players(self) -> None:
         self.online_players -= 1
 
-    def __repr__(self):
-        return f"MCBackend(\'{self.name}\')"
+    def __repr__(self) -> str:
+        return f"MCBackend('{self.name}')"

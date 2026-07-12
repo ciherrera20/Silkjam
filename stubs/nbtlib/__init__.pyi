@@ -1,0 +1,9 @@
+from os import PathLike
+from typing import Any
+
+class Compound:
+    def __getitem__(self, key: str) -> Any: ...
+
+class File(Compound): ...
+
+def load(filename: str | PathLike[str]) -> File: ...
