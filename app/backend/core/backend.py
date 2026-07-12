@@ -161,7 +161,7 @@ class MCBackend(Supervisor):
         server_jar_file = self.root / "server.jar"
         self.server_proc = await asyncio.create_subprocess_exec(
             "java",
-            "-Xmx2G",
+            *self.listing.jvm_flags,
             "-jar",
             server_jar_file,
             "nogui",
