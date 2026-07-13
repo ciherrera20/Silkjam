@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self
+from typing import Any, Self
 
 from pydantic import BaseModel, Field
 
@@ -54,6 +54,33 @@ def parse_properties(path: Path) -> tuple[dict[str, str], list[ServerPropertiesL
     return properties, layout
 
 
+def dump_properties(path: Path, values: dict[str, Any]) -> None:
+    """Update known properties while preserving a file's comments and layout."""
+
+    serialized_values = {
+        key: "" if value is None else str(value).lower() if isinstance(value, bool) else str(value)
+        for key, value in values.items()
+    }
+    _, layout = parse_properties(path)
+
+    seen: set[str] = set()
+
+    with path.open("w", encoding="utf-8", newline="\n") as f:
+        for line in layout:
+            if line.key is None:
+                f.write(line.value + "\n")
+                continue
+
+            value = serialized_values.get(line.key, line.value)
+            f.write(f"{line.key}={value}\n")
+            seen.add(line.key)
+
+        # Append newly-added properties.
+        for key, value in serialized_values.items():
+            if key not in seen:
+                f.write(f"{key}={value}\n")
+
+
 class ServerProperties(BaseModel):
     motd: str
     max_players: int = Field(alias="max-players")
@@ -90,31 +117,19 @@ class ServerProperties(BaseModel):
         return config
 
     def dump(self, path: Path) -> None:
-        values = {
-            key: (
-                ""
-                if value is None
-                else str(value).lower()
-                if isinstance(value, bool)
-                else str(value)
-            )
-            for key, value in self.model_dump(by_alias=True).items()
-        }
-        _, layout = parse_properties(path)
+        dump_properties(path, self.model_dump(by_alias=True))
 
-        seen: set[str] = set()
 
-        with path.open("w", encoding="utf-8", newline="\n") as f:
-            for line in layout:
-                if line.key is None:
-                    f.write(line.value + "\n")
-                    continue
+class VoiceChatServerProperties(BaseModel):
+    """The Simple Voice Chat properties Silkjam needs to manage."""
 
-                value = values.get(line.key, line.value)
-                f.write(f"{line.key}={value}\n")
-                seen.add(line.key)
+    port: int
+    voice_host: str | None = None
 
-            # Append newly-added properties.
-            for key, value in values.items():
-                if key not in seen:
-                    f.write(f"{key}={value}\n")
+    @classmethod
+    def load(cls, path: Path) -> Self:
+        properties, _ = parse_properties(path)
+        return cls.model_validate(properties)
+
+    def dump(self, path: Path) -> None:
+        dump_properties(path, self.model_dump())

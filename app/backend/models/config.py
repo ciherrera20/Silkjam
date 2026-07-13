@@ -21,9 +21,12 @@ class Config(BaseModel):
             listing.errors.clear()
 
         proxy_ports: set[int] = set()
+        voice_ports: set[int] = set()
         for listing in self.proxy_listing.values():
             if listing.port in proxy_ports:
                 listing.errors.append(f'Proxy port "{listing.port}" is already taken')
+            if listing.voice_port is not None and listing.voice_port in voice_ports:
+                listing.errors.append(f'Voice port "{listing.voice_port}" is already taken')
             for subdomain, server_name in listing.subdomains.items():
                 if subdomain != "" and not SUBDOMAIN_REGEX.fullmatch(subdomain):
                     listing.errors.append(f'Proxy subdomain "{subdomain}" is invalid')
@@ -34,6 +37,8 @@ class Config(BaseModel):
                     )
             if listing.valid:
                 proxy_ports.add(listing.port)
+                if listing.voice_port is not None:
+                    voice_ports.add(listing.voice_port)
         return self
 
     @model_validator(mode="after")

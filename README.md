@@ -1,89 +1,110 @@
-# Suggested project structure:
-```
-minecraft-orchestrator/
-├── Dockerfile                  # Builds the orchestrator container
-├── docker-compose.yml          # Optional, for local dev or orchestrator startup
-├── README.md                   # Project documentation
-├── requirements.txt            # Python dependencies (if using FastAPI/Flask)
-├── orchestrator/               # Orchestrator core code
-│   ├── __init__.py
-│   ├── main.py                 # Entry point (starts REST API server)
-│   ├── api/                    # REST API endpoints
-│   │   ├── __init__.py
-│   │   ├── servers.py          # Endpoints for create/list/delete servers
-│   │   ├── backups.py          # Endpoints to trigger backups / restore
-│   │   └── mods.py             # Endpoints to manage Fabric mods via ferium
-│   ├── core/                   # Internal logic
-│   │   ├── __init__.py
-│   │   ├── server_manager.py   # Logic to spawn, stop, and track servers
-│   │   ├── backup_manager.py   # Handles rclone uploads, schedules
-│   │   ├── mod_manager.py      # Runs ferium commands to update mods
-│   │   └── user_manager.py     # Handles Minecraft server users and privileges
-│   └── utils/
-│       ├── __init__.py
-│       ├── logger.py           # Logging setup
-│       └── config.py           # Loads config/environment variables
-├── data/                       # Base directory for all server worlds
-│   └── (world folders mounted here)
-├── backups/                    # Local temporary storage for backups (optional)
-├── scripts/                    # Helper scripts (cron, init, etc.)
-│   ├── backup.sh
-│   ├── restore.sh
-│   └── start_server.sh
-└── tests/                      # Unit / integration tests
-    ├── test_api.py
-    └── test_core.py
+# Silkjam
+
+Silkjam orchestrates on-demand Minecraft servers behind a TCP proxy. It starts
+backends when players join, manages server and RCON ports, tracks server status,
+and can proxy Simple Voice Chat UDP traffic. The web API is served through
+Caddy alongside the small frontend.
+
+## Quick start
+
+Docker Compose is the supported way to run Silkjam locally.
+
+```bash
+cp .env.sample .env
+docker compose up --build
 ```
 
-# TODOs
-- Backend
-    - Organize FastAPI backends: https://fastapi.tiangolo.com/tutorial/bigger-applications/#include-an-apirouter-in-another
-    - Add ferium mod manager and server version upgrading
-    - Create API endpoints
-        - Endpoint to create/delete proxy
-        - Endpoint to create/delete server
-        - Endpoint to upload/download world
-        - Endpoint to enable/disable proxies/servers
-    - Create web ui
-    - Use watchfiles to watch for changes in config file and apply them
-        - Not sure the best way to implement config changes. Some require server restarts, some don't
-    - Enforce IP bans per backend in proxy
-    - Figure out how to create a less privileged user per backend server and start the server processes as that user
-    - Figure out how to limit resources per server, and how to monitor resource usage (CPU, memory, disk usage, maybe network?)
-    - Add per-unit force stop setting when exiting to supervisor
-    - Add semaphore for initializing server processes to avoid overwhelming the machine
-        - Add config option for the number of concurrent server starts
-        - Maybe not necessary?
-    - Add cooldown between backend server restarts?
-    - Look into using Pydanic to validate protocol packets and possibly Construct to ease parsing them
-    - Add EULA param to config
-    - Add logging for all IPs trying to ping the server
-    - Move backups into server folder and change current backup folder into a remote sync
-    - Use subauth requests in nginx to serve static files, including dynmap files
-- Frontend:
-    - Set up React
-- Still not happy with overall organization. Move docker stuff and env stuff back out into project root. Also, think about portability of project_environment
+The sample configuration uses `mc.localhost`, exposes the API on
+`http://localhost:8500`, Minecraft on TCP port `25565`, and Simple Voice Chat
+on UDP port `24454`. It uses `CADDY_TLS=tls internal`, which creates a local
+certificate; browsers may require Caddy's local CA to be trusted before HTTPS
+is shown as trusted.
 
-# IN PROGRESS
+Runtime data is stored under `DATA_VOLUME` (by default `./volumes/data` in the
+sample). On first start Silkjam creates `config.json` there. Edit that file to
+add backend servers and routes, then restart the service after configuration
+changes.
 
-# DONE
-- [DONE] Add automatic backups
-    - [DONE] Local backups for now, can add cloud sync with rclone later
-    - [DONE] Add retry on "file changed as we read it"
-    - [DONE] Catch fatal errors and retry after some time
-- [DONE] Separate background process to ping server status into its own unit
-    - [DONE] Add one last check for player count before setting server status to sleep
-- [DONE] Add nginx reverse proxy
-- [DONE] Add background task to constantly ping server process and read the number of players connected, as well as the protocol version
-- [DONE] Use Pydantic for reading and writing config and server properties
-- [DONE] Create server.properties if it doesn't exist
-- [DONE] Add ability to disable sleep timeout
-- [DONE] Use dynamic port allocation for the backend
-- [DONE] Track PR to mctools: https://github.com/OwenCochell/mctools/pull/18
-- [DONE] Figure out how to use RCON
-- [DONE] Add core API to start/stop servers
-- [DONE] Add server sleeping after a certain amount of time with no players
-- [DONE] Consider re-writing backend as a single class that is started and stopped dynamically by orchestrator when the proxy received a signal
-    - Decided against. Its easier to have a backend class that is always running and supervises its own set of units.
-- [DONE] When backend server is running, forward pings to it
-    - [DONE] Figure out when backend server is ready to accept players
+## Configuration
+
+Environment variables configure the container and public endpoints:
+
+| Variable | Purpose |
+| --- | --- |
+| `DOMAIN` | Minecraft and HTTPS domain, for example `mc.example.com`. |
+| `MINECRAFT_PORT` | Host TCP port mapped to the default proxy port. |
+| `VOICECHAT_PORT` | Host UDP port for Simple Voice Chat; it must match the proxy's `voice_port`. |
+| `API_PORT` | Host port mapped to the internal API port 8000. |
+| `CADDY_TLS` | Set `tls internal` for local development; leave empty for Caddy's public certificate handling. |
+| `DATA_VOLUME`, `CADDY_VOLUME` | Persistent host paths or named volumes for Silkjam and Caddy data. |
+| `SERVER_PORTS` | Inclusive internal allocation range, such as `40000:45000`. |
+| `DEBUG` | Set to `true` for verbose logs. |
+| `PUID`, `PGID` | UID and GID used for mounted runtime data. |
+
+`config.json` contains `proxy_listing` and `server_listing`. A proxy maps
+subdomains to backends; the empty subdomain (`""`) is the base domain. Set
+`voice_port` to enable its UDP listener. `voice_ip_binding` defaults to `true`
+and accepts voice datagrams only from a player's Minecraft TCP source IP; set it
+to `false` for deployments where TCP and UDP legitimately use different client
+IPs.
+
+Server entries control the Minecraft version, sleep behavior, backup behavior,
+and per-backend `jvm_flags` (default: `-Xmx2G`). When a voice-enabled backend is
+routed through exactly one voice-enabled proxy, Silkjam writes that public
+`DOMAIN:voice_port` value to the backend's `voice_host` property automatically.
+
+For example:
+
+```json
+{
+  "proxy_listing": {
+    "public": {
+      "port": 25565,
+      "voice_port": 24454,
+      "voice_ip_binding": true,
+      "enabled": true,
+      "subdomains": {"": "survival", "play": "survival"}
+    }
+  },
+  "server_listing": {
+    "survival": {
+      "version": {"name": "1.21.4", "protocol": 769},
+      "sleep_properties": {"timeout": 300, "motd": null},
+      "backup_properties": {
+        "interval": 60,
+        "max_backups": 5,
+        "strategy": "exponential",
+        "enabled": true
+      },
+      "jvm_flags": ["-Xmx2G"],
+      "enabled": true
+    }
+  }
+}
+```
+
+## Production deployment
+
+Set `DOMAIN` to a public DNS name pointing at the host, use persistent volumes,
+and leave `CADDY_TLS` unset so Caddy can obtain and renew certificates. Publish
+TCP ports 443 and 25565 and the configured UDP voice port through your firewall
+and container runtime. Ensure the configured ownership (`PUID`/`PGID`) can read
+and write the data and Caddy volumes.
+
+Before exposing the service, set a real domain, use production volume paths,
+and review `config.json` routes and server settings. Keep `DEBUG=false` unless
+you are diagnosing an issue.
+
+## Development commands
+
+Use uv for local checks outside the container:
+
+```bash
+uv sync
+uv run ruff format app test
+uv run ruff check app test
+uv run mypy app/backend
+uv run pytest
+```
+
+See [TODO.md](TODO.md) for planned work and completed historical milestones.

@@ -40,6 +40,7 @@ class ServerListing(BaseModel):
     backup_properties: BackupProperties = BackupProperties(
         interval=60, max_backups=1, strategy=BackupStrategy.EXPONENTIAL, enabled=False
     )
+    jvm_flags: list[str] = ["-Xmx2G"]
     enabled: bool
 
     # Annotate listing as valid or not
