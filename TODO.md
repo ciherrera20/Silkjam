@@ -44,6 +44,9 @@
 ## Deployment and Architecture
 
 - Separate Caddy and the frontend into their own containers.
+- Merge the API and orchestrator into one FastAPI application; retain
+  `MCOrchestrator` as an independent component, but remove the internal Unix
+  socket/WebSocket config synchronization.
 - Revisit the overall organization, including Docker/environment file layout
   and project-environment portability.
 
