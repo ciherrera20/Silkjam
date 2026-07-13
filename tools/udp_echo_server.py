@@ -1,19 +1,21 @@
 import asyncio
+from typing import Any, cast
 
+class EchoServerProtocol(asyncio.DatagramProtocol):
+    transport: asyncio.DatagramTransport
 
-class EchoServerProtocol:
-    def connection_made(self, transport):
-        self.transport = transport
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.transport = cast(asyncio.DatagramTransport, transport)
 
-    def datagram_received(self, data, addr):
+    def datagram_received(self, data: bytes, addr: tuple[str | Any, int]) -> None:
         message = data.decode()
-        print('Received %r from %s' % (message, addr))
-        print('Send %r to %s' % (message, addr))
+        print('[server] Received %r from %s' % (message, addr))
+        print('[server] Send %r to %s' % (message, addr))
         self.transport.sendto(data, addr)
 
 
-async def main():
-    print("Starting UDP server")
+async def main() -> None:
+    print("[server] Starting UDP server")
 
     # Get a reference to the event loop as we plan to use
     # low-level APIs.
