@@ -124,6 +124,7 @@ class VoiceChatServerProperties(BaseModel):
     """The Simple Voice Chat properties Silkjam needs to manage."""
 
     port: int
+    voice_host: str | None = None
 
     @classmethod
     def load(cls, path: Path) -> Self:

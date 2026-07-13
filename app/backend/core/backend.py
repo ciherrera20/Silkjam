@@ -36,6 +36,7 @@ class MCBackend(Supervisor):
         port_factory: PortCMFactory,
         listing: ServerListing,
         supervisor: Supervisor,
+        voice_host: str | None = None,
         stop_timeout: int = 90,
         sigint_timeout: int = 90,
         sigterm_timeout: int = 90,
@@ -46,6 +47,7 @@ class MCBackend(Supervisor):
         self.port_factory: PortCMFactory = port_factory
         self.listing: ServerListing = listing
         self.supervisor: Supervisor = supervisor
+        self.voice_host: str | None = voice_host
         self.stop_timeout: int = stop_timeout
         self.sigint_timeout: int = sigint_timeout
         self.sigterm_timeout: int = sigterm_timeout
@@ -173,8 +175,19 @@ class MCBackend(Supervisor):
             voice_port = self.stack.enter_context(self.port_factory(PortProtocol.UDP))
             self.voicechat_properties = VoiceChatServerProperties.load(voicechat_properties_path)
             self.voicechat_properties.port = voice_port
+            if self.voice_host is not None:
+                self.voicechat_properties.voice_host = self.voice_host
             self.voicechat_properties.dump(voicechat_properties_path)
-            self.log.debug("Assigned voice chat UDP port %s", voice_port)
+            if self.voice_host is None:
+                self.log.warning(
+                    "Assigned voice chat UDP port %s without a public voice host", voice_port
+                )
+            else:
+                self.log.debug(
+                    "Assigned voice chat UDP port %s and public host %s",
+                    voice_port,
+                    self.voice_host,
+                )
 
         # Start upstream server subprocess
         server_jar_file = self.root / "server.jar"

@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 MINECRAFT_PORT = os.environ.get("MINECRAFT_PORT", 25565)
 SERVER_PORTS = os.environ.get("SERVER_PORTS", "40000:45000")
+DOMAIN = os.environ["DOMAIN"]
 
 
 class AcquirePortError(RuntimeError):
@@ -105,6 +106,29 @@ class MCOrchestrator(Supervisor):
         self.config.validate_semantics()
         self._config_changed.set()
 
+    def get_voice_host(self, backend_name: str) -> str | None:
+        """Return the sole public voice endpoint that routes to a backend."""
+
+        voice_ports = {
+            listing.voice_port
+            for listing in self.config.proxy_listing.values()
+            if (
+                listing.enabled
+                and listing.valid
+                and listing.voice_port is not None
+                and backend_name in listing.subdomains.values()
+            )
+        }
+        if len(voice_ports) != 1:
+            if voice_ports:
+                logger.warning(
+                    "Backend %s is routed through multiple voice endpoints; not setting voice_host",
+                    backend_name,
+                )
+            return None
+
+        return f"{DOMAIN}:{voice_ports.pop()}"
+
     def reload_config(self) -> None:
         # Start proxies in the listing that are not currently running
         proxy_listing_names = set()
@@ -157,6 +181,7 @@ class MCOrchestrator(Supervisor):
                         self.acquire_port,
                         server_listing,
                         self,
+                        self.get_voice_host(backend_name),
                     )
                     backend.on_listing_change(self.update_config)
                     self.backends[backend_name] = backend
