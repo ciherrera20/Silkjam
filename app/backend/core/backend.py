@@ -26,7 +26,9 @@ class MCBackend(Supervisor):
     STARTING_SERVER_REGEX = re.compile(rb"^.*:(\d{5}).*$")
     DONE_REGEX = re.compile(rb"^.*Done \(.*$")
 
-    STDOUT_LOG_LEVEL = logging.DEBUG
+    # Minecraft writes its normal console log to stdout. Keep it visible in the
+    # Silkjam container log so it remains useful without enabling DEBUG.
+    STDOUT_LOG_LEVEL = logging.INFO
     STDERR_LOG_LEVEL = logging.WARNING
 
     def __init__(
@@ -138,6 +140,9 @@ class MCBackend(Supervisor):
         self.online_players = stats["players"]["online"]
         version = Version(**stats["version"])
         if self.listing.version != version:
+            self.log.info(
+                "Detected Minecraft version %s (protocol %s)", version.name, version.protocol
+            )
             self.listing.version = version
             if self.listing_change_cb is not None:
                 self.listing_change_cb()
@@ -183,8 +188,8 @@ class MCBackend(Supervisor):
                     "Assigned voice chat UDP port %s without a public voice host", voice_port
                 )
             else:
-                self.log.debug(
-                    "Assigned voice chat UDP port %s and public host %s",
+                self.log.info(
+                    "Configured voice chat with UDP port %s and public host %s",
                     voice_port,
                     self.voice_host,
                 )
@@ -252,36 +257,56 @@ class MCBackend(Supervisor):
                 self.log.debug("Minecraft server process has already exited")
 
             if not shutdown:
-                with suppress(TimeoutError):
-                    # Send stop command and wait before progressing to SIGINT
-                    self.log.debug(
-                        "Sending stop command to minecraft server process %s", self.server_proc.pid
-                    )
-                    self.server_proc.stdin.write(b"stop\n")
-                    await self.server_proc.stdin.drain()
+                # Send stop command and wait before progressing to SIGINT.
+                self.log.debug(
+                    "Sending stop command to minecraft server process %s", self.server_proc.pid
+                )
+                self.server_proc.stdin.write(b"stop\n")
+                await self.server_proc.stdin.drain()
+                try:
                     await asyncio.wait_for(self.server_proc.wait(), self.stop_timeout)
+                except TimeoutError:
+                    self.log.warning(
+                        "Minecraft server did not stop within %s seconds; sending SIGINT",
+                        self.stop_timeout,
+                    )
+                else:
                     shutdown = True
                     self.log.debug("Minecraft server process exited after stop command")
 
             if not shutdown:
-                with suppress(TimeoutError):
-                    # Send SIGINT and wait before progressing to SIGTERM
-                    self.log.debug(
-                        "Sending SIGINT to minecraft server process %s", self.server_proc.pid
-                    )
-                    self.server_proc.send_signal(signal.SIGINT)
+                # Send SIGINT and wait before progressing to SIGTERM.
+                self.log.debug(
+                    "Sending SIGINT to minecraft server process %s", self.server_proc.pid
+                )
+                self.server_proc.send_signal(signal.SIGINT)
+                try:
                     await asyncio.wait_for(self.server_proc.wait(), self.sigint_timeout)
+                except TimeoutError:
+                    self.log.warning(
+                        "Minecraft server did not stop within %s seconds after SIGINT; "
+                        "sending SIGTERM",
+                        self.sigint_timeout,
+                    )
+                else:
                     shutdown = True
                     self.log.debug("Minecraft server process exited after SIGINT")
 
             if not shutdown:
-                with suppress(TimeoutError):
-                    # Send SIGTERM and wait before progressing to SIGKILL
-                    self.log.debug(
-                        "Sending SIGTERM to minecraft server process %s", self.server_proc.pid
-                    )
-                    self.server_proc.send_signal(signal.SIGTERM)
+                # Send SIGTERM and wait before progressing to SIGKILL.
+                self.log.debug(
+                    "Sending SIGTERM to minecraft server process %s", self.server_proc.pid
+                )
+                self.server_proc.send_signal(signal.SIGTERM)
+                try:
                     await asyncio.wait_for(self.server_proc.wait(), self.sigterm_timeout)
+                except TimeoutError:
+                    self.log.warning(
+                        "Minecraft server did not stop within %s seconds after SIGTERM; "
+                        "sending SIGKILL",
+                        self.sigterm_timeout,
+                    )
+                else:
                     shutdown = True
                     self.log.debug("Minecraft server process exited after SIGTERM")
         finally:
@@ -293,7 +318,7 @@ class MCBackend(Supervisor):
                         "Sending SIGKILL to minecraft server process %s", self.server_proc.pid
                     )
                     self.server_proc.send_signal(signal.SIGKILL)
-                    self.log.debug("Minecraft server process exited after SIGKILL")
+                    self.log.warning("Sent SIGKILL to minecraft server process")
 
         # Log return code
         if self.server_proc.returncode == 0:
@@ -353,7 +378,7 @@ class MCBackend(Supervisor):
 
     async def log_pipe(self, pipe: asyncio.StreamReader, level: int = logging.DEBUG) -> None:
         async for msg in pipe:
-            self.log.log(level, msg.decode("utf-8"))
+            self.log.log(level, msg.decode("utf-8", errors="replace").rstrip("\r\n"))
 
     async def request_status_continuously(
         self, interval: float = 60, retry_interval: float = 10, max_retries: int = 3

@@ -168,7 +168,7 @@ class MCBackupManager(Timer):
                 tmp.unlink(missing_ok=True)  # cleanup leftover partials
 
     async def save_and_backup(self, name: str) -> None:
-        self.log.debug("Starting backup %s", name)
+        self.log.info("Creating backup %s", name)
         try:
             async with self.autosave_off() as client:
                 await client.command("say Backing up world")

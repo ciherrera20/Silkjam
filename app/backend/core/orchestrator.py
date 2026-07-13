@@ -50,6 +50,7 @@ class MCOrchestrator(Supervisor):
         # Open and read config file
         self.config = Config.load(self.root / "config.json")
         self.config.dump(self.root / "config.json")
+        logger.info("Loaded configuration from %s", self.root / "config.json")
         self._config_changed.set()
 
     def _reserved_proxy_ports(self, protocol: PortProtocol) -> set[int]:
@@ -104,6 +105,7 @@ class MCOrchestrator(Supervisor):
         # Dump updated config and flag change
         self.config.dump(self.root / "config.json")
         self.config.validate_semantics()
+        logger.info("Saved configuration changes")
         self._config_changed.set()
 
     def get_voice_host(self, backend_name: str) -> str | None:
@@ -130,6 +132,7 @@ class MCOrchestrator(Supervisor):
         return f"{DOMAIN}:{voice_ports.pop()}"
 
     def reload_config(self) -> None:
+        logger.info("Applying configuration changes")
         # Start proxies in the listing that are not currently running
         proxy_listing_names = set()
         for proxy_name, proxy_listing in self.config.proxy_listing.items():

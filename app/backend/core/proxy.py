@@ -183,7 +183,7 @@ class MCProxy(BaseUnit):
     async def _identify_backend(
         self, packet_reader: PacketReader, conn_logger: logging.Logger | logging.LoggerAdapter[Any]
     ) -> tuple[MCBackend, Handshake] | None:
-        handshake: Handshake
+        handshake: Handshake | None = None
         try:
             try:
                 # Try parsing as a legacy ping
@@ -239,9 +239,18 @@ class MCProxy(BaseUnit):
                 except MCProtocolError as err:
                     conn_logger.debug("Error during handshake: %s", err)
                 except ConnectionResetError:
-                    conn_logger.info("Client closed connection unexpectedly")
+                    conn_logger.debug("Client closed connection unexpectedly")
         except Exception as err:
             conn_logger.exception("Exception caught while identifying backend: %s", err)
+        if handshake is not None and (
+            isinstance(handshake, LegacyPingRequest) or handshake.next_state == 1
+        ):
+            server_address = (
+                handshake.hostname
+                if isinstance(handshake, LegacyPingRequest)
+                else handshake.server_address
+            )
+            conn_logger.info("Received ping for unmapped server address %s", server_address)
         return None
 
     async def _read_login_start(
@@ -262,7 +271,7 @@ class MCProxy(BaseUnit):
             except MCProtocolError as err:
                 conn_logger.debug("Error during login start: %s", err)
             except ConnectionResetError:
-                conn_logger.info("Client closed connection unexpectedly")
+                conn_logger.debug("Client closed connection unexpectedly")
         except Exception as err:
             conn_logger.exception("Exception caught while identifying user: %s", err)
         return None
@@ -336,7 +345,7 @@ class MCProxy(BaseUnit):
                 except MCProtocolError as err:
                     conn_logger.debug("Error during handshake: %s", err)
                 except ConnectionResetError:
-                    conn_logger.info("Client closed connection unexpectedly")
+                    conn_logger.debug("Client closed connection unexpectedly")
         except Exception as err:
             conn_logger.exception("Exception caught while handling client handshake: %s", err)
 
@@ -482,6 +491,12 @@ class MCProxy(BaseUnit):
                         login_start.player_id,
                         login_start.extra_data,
                     )
+                else:
+                    conn_logger.warning(
+                        "Could not parse login start for backend %s; "
+                        "player tracking is unavailable",
+                        backend.name,
+                    )
 
             initial_data += packet_reader.unparsed.tobytes()
             try:
@@ -550,7 +565,9 @@ class MCProxy(BaseUnit):
                     if player_joining:
                         # Set server running if it isn't already
                         if not backend.mcproc_starting():
-                            conn_logger.debug("Starting backend server %s", backend.name)
+                            conn_logger.info(
+                                "Player login is waking backend server %s", backend.name
+                            )
                             backend.start_mcproc()
 
                         # Keep client connected until server starts (or fails to start)
@@ -573,8 +590,10 @@ class MCProxy(BaseUnit):
                             )
                         else:
                             # Respond to client logging in if server failed to start
-                            conn_logger.debug(
-                                "Backend server failed to start on time, sending waking kick msg"
+                            conn_logger.warning(
+                                "Backend server %s failed to start on time; "
+                                "sending waking kick message",
+                                backend.name,
                             )
                             await self._handle_handshake(
                                 backend,
