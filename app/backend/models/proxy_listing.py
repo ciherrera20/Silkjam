@@ -7,6 +7,7 @@ Port = Annotated[int, Field(gt=0, le=65535)]
 
 class ProxyListing(BaseModel):
     port: Port
+    voice_port: Port | None = None
     enabled: bool
     subdomains: dict[str, str]
 

@@ -9,7 +9,7 @@ from backend.models.server_listing import (
     SleepProperties,
     Version,
 )
-from backend.models.server_properties import ServerProperties
+from backend.models.server_properties import ServerProperties, VoiceChatServerProperties
 
 __all__ = (
     "ProxyListing",
@@ -22,5 +22,6 @@ __all__ = (
     "SUBDOMAIN_REGEX",
     "Config",
     "ServerProperties",
+    "VoiceChatServerProperties",
     "UserProfile",
 )

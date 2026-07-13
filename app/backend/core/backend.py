@@ -11,14 +11,15 @@ from typing import Any
 from mctools import AsyncPINGClient, AsyncRCONClient
 
 from backend.core.backup_manager import MCBackupManager
+from backend.core.ports import PortProtocol
 from backend.core.status_checker import MCStatusChecker
-from backend.models import ServerListing, ServerProperties, Version
+from backend.models import ServerListing, ServerProperties, Version, VoiceChatServerProperties
 from backend.supervisor import Supervisor, Timer
 from backend.utils.logger_adapters import PrefixLoggerAdapter
 
 logger = logging.getLogger(__name__)
 
-type PortCMFactory = Callable[[], AbstractContextManager[int]]
+type PortCMFactory = Callable[[PortProtocol], AbstractContextManager[int]]
 
 
 class MCBackend(Supervisor):
@@ -51,6 +52,7 @@ class MCBackend(Supervisor):
         self.log = PrefixLoggerAdapter(logger, {"server": self.name})
 
         self.properties = ServerProperties.load(self.root / "server.properties")
+        self.voicechat_properties: VoiceChatServerProperties | None = None
         self.icon: str | None = None
 
         self.server_proc: asyncio.subprocess.Process
@@ -93,6 +95,12 @@ class MCBackend(Supervisor):
     @property
     def rcon_port(self) -> int | None:
         return self.properties.rcon_port
+
+    @property
+    def voice_port(self) -> int | None:
+        if self.voicechat_properties is None:
+            return None
+        return self.voicechat_properties.port
 
     @property
     def motd(self) -> str:
@@ -146,8 +154,8 @@ class MCBackend(Supervisor):
             self.icon = None
 
         # Allocate ports and write server properties
-        server_port = self.stack.enter_context(self.port_factory())
-        rcon_port = self.stack.enter_context(self.port_factory())
+        server_port = self.stack.enter_context(self.port_factory(PortProtocol.TCP))
+        rcon_port = self.stack.enter_context(self.port_factory(PortProtocol.TCP))
         self.properties = ServerProperties.load(self.root / "server.properties")
         self.properties.server_port = server_port
         self.properties.rcon_port = rcon_port
@@ -156,6 +164,17 @@ class MCBackend(Supervisor):
             "admin" if not self.properties.rcon_password else self.properties.rcon_password
         )
         self.properties.dump(self.root / "server.properties")
+
+        voicechat_properties_path = (
+            self.root / "config" / "voicechat" / "voicechat-server.properties"
+        )
+        self.voicechat_properties = None
+        if voicechat_properties_path.exists():
+            voice_port = self.stack.enter_context(self.port_factory(PortProtocol.UDP))
+            self.voicechat_properties = VoiceChatServerProperties.load(voicechat_properties_path)
+            self.voicechat_properties.port = voice_port
+            self.voicechat_properties.dump(voicechat_properties_path)
+            self.log.debug("Assigned voice chat UDP port %s", voice_port)
 
         # Start upstream server subprocess
         server_jar_file = self.root / "server.jar"

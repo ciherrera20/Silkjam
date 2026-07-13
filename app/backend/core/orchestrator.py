@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.core.backend import MCBackend
+from backend.core.ports import PortProtocol
 from backend.core.proxy import MCProxy
 from backend.models import UNKNOWN_VERSION, Config
 from backend.supervisor import Supervisor
@@ -35,9 +36,12 @@ class MCOrchestrator(Supervisor):
         self.proxies: dict[str, MCProxy] = {}  # Proxy name -> MCProxy object
         self.backends: dict[str, MCBackend] = {}  # Server name -> MCBackend object
 
-        # Create server port range and keep track of allocated ports
+        # Create server port range and keep track of allocated ports by protocol.
         self.server_port_range = tuple(int(p) for p in SERVER_PORTS.split(":"))
-        self.acquired_server_ports: set[int] = set()
+        self.acquired_server_ports: dict[PortProtocol, set[int]] = {
+            PortProtocol.TCP: set(),
+            PortProtocol.UDP: set(),
+        }
 
     async def _start(self) -> None:
         await super()._start()
@@ -47,29 +51,53 @@ class MCOrchestrator(Supervisor):
         self.config.dump(self.root / "config.json")
         self._config_changed.set()
 
+    def _reserved_proxy_ports(self, protocol: PortProtocol) -> set[int]:
+        """Return configured and active proxy ports for a transport protocol."""
+
+        if protocol is PortProtocol.TCP:
+            configured_ports = {
+                listing.port
+                for listing in self.config.proxy_listing.values()
+                if listing.enabled and listing.valid
+            }
+            active_ports = {proxy.port for proxy in self.proxies.values()}
+        else:
+            configured_ports = {
+                listing.voice_port
+                for listing in self.config.proxy_listing.values()
+                if listing.enabled and listing.valid and listing.voice_port is not None
+            }
+            active_ports = {
+                proxy.voice_port for proxy in self.proxies.values() if proxy.voice_port is not None
+            }
+        return configured_ports | active_ports
+
     @contextmanager
-    def acquire_port(self) -> Generator[int]:
+    def acquire_port(self, protocol: PortProtocol) -> Generator[int]:
         # Find available port
         port = None
         lo, hi = self.server_port_range
-        for p in range(lo, hi):
-            if p not in self.acquired_server_ports:
+        unavailable_ports = self.acquired_server_ports[protocol] | self._reserved_proxy_ports(
+            protocol
+        )
+        for p in range(lo, hi + 1):
+            if p not in unavailable_ports:
                 port = p
                 break
 
         # Allocate it
         if port is None:
-            raise AcquirePortError(f"Could not acquire port in range {lo}:{hi}")
+            raise AcquirePortError(f"Could not acquire {protocol} port in range {lo}:{hi}")
 
-        logger.debug("Acquiring port %s", port)
-        self.acquired_server_ports.add(port)
+        logger.debug("Acquiring %s port %s", protocol, port)
+        self.acquired_server_ports[protocol].add(port)
 
         # Yield port and deallocate after its done being used
         try:
             yield port
         finally:
-            logger.debug("Releasing port %s", port)
-            self.acquired_server_ports.discard(port)
+            logger.debug("Releasing %s port %s", protocol, port)
+            self.acquired_server_ports[protocol].discard(port)
 
     def update_config(self) -> None:
         # Dump updated config and flag change
