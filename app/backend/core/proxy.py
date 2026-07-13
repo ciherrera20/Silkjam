@@ -28,12 +28,18 @@ logger = logging.getLogger(__name__)
 
 type Handshake = LegacyPingRequest | HandshakeRequest
 type VoicePacket = tuple[bytes, uuid.UUID, tuple[str | Any, int]]
+type PlayerSession = tuple[float, UserProfile, MCBackend, str]
 
 DOMAIN: str = os.environ["DOMAIN"]
 DOMAIN_REGEX: re.Pattern[str] = re.compile(
     rf"(?:({SUBDOMAIN_REGEX.pattern})\.)?{re.escape(DOMAIN)}"
 )
 HOLD_TIMEOUT: int = 25
+VOICE_PACKET_QUEUE_SIZE: int = 1024
+VOICE_BRIDGE_IDLE_TIMEOUT: float = 60
+VOICE_BRIDGE_CLEANUP_INTERVAL: float = 10
+VOICE_LISTENER_RESTART_DELAY: float = 1
+VOICE_LISTENER_MAX_RESTART_DELAY: float = 30
 
 
 class VoiceProxy(asyncio.DatagramProtocol):
@@ -46,6 +52,7 @@ class VoiceProxy(asyncio.DatagramProtocol):
     ) -> None:
         self.handler = handler
         self.log = log
+        self.closed = asyncio.Event()
         self.transport: asyncio.DatagramTransport
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
@@ -74,6 +81,7 @@ class VoiceProxy(asyncio.DatagramProtocol):
             self.log.debug("Voice UDP listener closed")
         else:
             self.log.warning("Voice UDP listener closed with an error: %s", exc)
+        self.closed.set()
 
 
 class VoiceBridge(asyncio.DatagramProtocol):
@@ -88,15 +96,18 @@ class VoiceBridge(asyncio.DatagramProtocol):
         self.log = log
         self.transport: asyncio.DatagramTransport
         self.connected = False
+        self.last_activity = time.monotonic()
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self.transport = cast(asyncio.DatagramTransport, transport)
         self.connected = True
 
     def datagram_received(self, data: bytes, addr: tuple[str | Any, int]) -> None:
+        self.last_activity = time.monotonic()
         self.proxy_transport.sendto(data, self.client_addr)
 
     def forward(self, data: bytes) -> None:
+        self.last_activity = time.monotonic()
         self.transport.sendto(data)
 
     def error_received(self, exc: Exception) -> None:
@@ -125,10 +136,13 @@ class MCProxy(BaseUnit):
         self.httpx_client: httpx.AsyncClient
         self.mojang_limiter = asyncio.BoundedSemaphore(10)
 
-        # player uuid -> { session_id -> (connection time, full profile, backend) }
-        self.player_sessions: dict[uuid.UUID, dict[int, tuple[float, UserProfile, MCBackend]]] = {}
+        # player UUID -> { session ID -> (connection time, profile, backend, TCP peer IP) }
+        self.player_sessions: dict[uuid.UUID, dict[int, PlayerSession]] = {}
         self.voice_bridges: dict[tuple[uuid.UUID, MCBackend], VoiceBridge] = {}
-        self.voice_packet_queue: asyncio.Queue[VoicePacket] = asyncio.Queue()
+        self.voice_packet_queue: asyncio.Queue[VoicePacket] = asyncio.Queue(
+            maxsize=VOICE_PACKET_QUEUE_SIZE
+        )
+        self.voice_queue_drops = 0
 
         self.log = PrefixLoggerAdapter(logger, {"proxy": self.name})
 
@@ -151,20 +165,16 @@ class MCProxy(BaseUnit):
             )
         self.stack = AsyncExitStack()
         self.proxy_server = await asyncio.start_server(self._handle_client, "0.0.0.0", self.port)
-        if self.voice_port is not None:
-            voice_transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
-                lambda: VoiceProxy(self.voice_packet_queue.put_nowait, self.log),
-                local_addr=("0.0.0.0", self.voice_port),
-            )
-            self.voice_transport = voice_transport
         self.httpx_client = httpx.AsyncClient()
         await self.stack.enter_async_context(self.proxy_server)
-        if self.voice_transport is not None:
-            self.stack.callback(self.voice_transport.close)
         await self.stack.enter_async_context(self.httpx_client)
 
     async def _stop(self, *args: Any) -> None:
         self.log.info("Stopping proxy server")
+        self._close_all_voice_bridges("proxy stopped")
+        if self.voice_transport is not None:
+            self.voice_transport.close()
+            self.voice_transport = None
         await self.stack.__aexit__(*args)
         del self.httpx_client
         del self.proxy_server
@@ -335,6 +345,7 @@ class MCProxy(BaseUnit):
         session_id: int,
         login_start: LoginStart,
         backend: MCBackend,
+        client_ip: str,
         conn_logger: logging.Logger | logging.LoggerAdapter[Any],
     ) -> None:
         """Resolve and track a player session until this task is cancelled.
@@ -369,7 +380,7 @@ class MCProxy(BaseUnit):
         # Track player until task is canceled
         player_sessions = self.player_sessions.setdefault(user_profile.id, {})
         if session_id not in player_sessions:
-            player_sessions[session_id] = (time.monotonic(), user_profile, backend)
+            player_sessions[session_id] = (time.monotonic(), user_profile, backend, client_ip)
             conn_logger.debug(
                 "Tracking session %s for player %s (%s) on backend %s",
                 session_id,
@@ -394,6 +405,16 @@ class MCProxy(BaseUnit):
                 del tracked_sessions[session_id]
                 if len(tracked_sessions) == 0:
                     del self.player_sessions[user_profile.id]
+                    self._close_player_voice_bridges(user_profile.id, "player disconnected")
+                else:
+                    _, _, selected_backend, _ = min(
+                        tracked_sessions.values(), key=lambda session: session[0]
+                    )
+                    self._close_player_voice_bridges(
+                        user_profile.id,
+                        "player session changed backend",
+                        keep_backend=selected_backend,
+                    )
                 conn_logger.debug(
                     "Stopped tracking session %s for player %s (%s)",
                     session_id,
@@ -407,6 +428,7 @@ class MCProxy(BaseUnit):
         handshake: Handshake,
         packet_reader: PacketReader,
         packet_writer: PacketWriter,
+        client_ip: str,
         conn_logger: logging.Logger | logging.LoggerAdapter[Any],
     ) -> None:
         # Forward traffic to actual minecraft server
@@ -451,7 +473,9 @@ class MCProxy(BaseUnit):
                     packet_reader, handshake.protocol_version, conn_logger
                 ):
                     track_player_session_task = asyncio.create_task(
-                        self._track_player_session(id(object()), login_start, backend, conn_logger)
+                        self._track_player_session(
+                            id(object()), login_start, backend, client_ip, conn_logger
+                        )
                     )
                     initial_data += packet_writer.encode_login_start_packet(
                         login_start.username,
@@ -507,7 +531,10 @@ class MCProxy(BaseUnit):
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         try:
-            ip, port = writer.get_extra_info("peername")
+            peername = writer.get_extra_info("peername")
+            if peername is None:
+                raise ConnectionError("Could not determine client address")
+            ip, port = peername[:2]
             conn_logger = PrefixLoggerAdapter(self.log, {"ip": ip, "port": port})
             conn_logger.debug("Client connected")
 
@@ -541,6 +568,7 @@ class MCProxy(BaseUnit):
                                 handshake,
                                 packet_reader,
                                 packet_writer,
+                                ip,
                                 conn_logger,
                             )
                         else:
@@ -571,6 +599,7 @@ class MCProxy(BaseUnit):
                         handshake,
                         packet_reader,
                         packet_writer,
+                        ip,
                         conn_logger,
                     )
             else:
@@ -590,10 +619,18 @@ class MCProxy(BaseUnit):
         if tracked_sessions is None:
             self.log.debug("Dropped voice packet for untracked player %s", player_id)
             return None
-        _, _, backend = min(
+        _, _, backend, client_ip = min(
             tracked_sessions.values(),
             key=lambda session: session[0],
         )
+        if self.listing.voice_ip_binding and addr[0] != client_ip:
+            self.log.debug(
+                "Dropped voice packet for player %s from %s: does not match TCP peer IP %s",
+                player_id,
+                addr,
+                client_ip,
+            )
+            return None
         if backend.voice_port is None or not backend.mcproc_running():
             self.log.debug(
                 "Dropped voice packet for player %s: backend %s has no active voice server",
@@ -631,29 +668,110 @@ class MCProxy(BaseUnit):
             )
         return voice_bridge
 
+    def _queue_voice_packet(self, packet: VoicePacket) -> None:
+        try:
+            self.voice_packet_queue.put_nowait(packet)
+        except asyncio.QueueFull:
+            self.voice_queue_drops += 1
+            if self.voice_queue_drops == 1 or self.voice_queue_drops % 100 == 0:
+                self.log.warning(
+                    "Dropped %s voice packets because the routing queue is full",
+                    self.voice_queue_drops,
+                )
+
+    def _close_voice_bridge(self, key: tuple[uuid.UUID, MCBackend], reason: str) -> None:
+        voice_bridge = self.voice_bridges.pop(key, None)
+        if voice_bridge is None:
+            return
+        player_id, backend = key
+        self.log.info(
+            "Closing voice bridge for player %s on backend %s: %s",
+            player_id,
+            backend.name,
+            reason,
+        )
+        if voice_bridge.connected:
+            voice_bridge.transport.close()
+
+    def _close_player_voice_bridges(
+        self, player_id: uuid.UUID, reason: str, keep_backend: MCBackend | None = None
+    ) -> None:
+        for key in tuple(self.voice_bridges):
+            bridge_player_id, backend = key
+            if bridge_player_id == player_id and backend is not keep_backend:
+                self._close_voice_bridge(key, reason)
+
+    def _close_all_voice_bridges(self, reason: str) -> None:
+        for key in tuple(self.voice_bridges):
+            self._close_voice_bridge(key, reason)
+
+    async def _run_voice_listener(self) -> None:
+        voice_port = self.voice_port
+        assert voice_port is not None  # This task only runs when voice chat is enabled
+        restart_delay = VOICE_LISTENER_RESTART_DELAY
+        loop = asyncio.get_running_loop()
+        while True:
+            transport: asyncio.DatagramTransport | None = None
+
+            try:
+                transport, protocol = await loop.create_datagram_endpoint(
+                    lambda: VoiceProxy(self._queue_voice_packet, self.log),
+                    local_addr=("0.0.0.0", voice_port),
+                )
+                self.voice_transport = transport
+                restart_delay = VOICE_LISTENER_RESTART_DELAY
+                await protocol.closed.wait()
+            except OSError as err:
+                self.log.warning("Voice UDP listener failed to start: %s", err)
+            finally:
+                if self.voice_transport is transport:
+                    self.voice_transport = None
+                if transport is not None:
+                    transport.close()
+
+            self.log.warning("Restarting voice UDP listener in %s seconds", restart_delay)
+            await asyncio.sleep(restart_delay)
+            restart_delay = min(restart_delay * 2, VOICE_LISTENER_MAX_RESTART_DELAY)
+
+    async def _cleanup_voice_bridges(self) -> None:
+        while True:
+            await asyncio.sleep(VOICE_BRIDGE_CLEANUP_INTERVAL)
+            now = time.monotonic()
+            for key, voice_bridge in tuple(self.voice_bridges.items()):
+                if now - voice_bridge.last_activity >= VOICE_BRIDGE_IDLE_TIMEOUT:
+                    self._close_voice_bridge(key, "idle timeout")
+
     async def _handle_voice_packets(self) -> None:
         self.log.debug("Started voice packet handler")
         try:
             while True:
                 data, player_id, addr = await self.voice_packet_queue.get()
-                voice_bridge = await self._get_or_create_voice_bridge(player_id, addr)
-                if voice_bridge is not None:
-                    voice_bridge.forward(data)
+                try:
+                    voice_bridge = await self._get_or_create_voice_bridge(player_id, addr)
+                    if voice_bridge is not None:
+                        voice_bridge.forward(data)
+                except Exception:
+                    self.log.exception("Failed to route voice packet for player %s", player_id)
         finally:
             self.log.debug("Stopped voice packet handler")
 
     async def run(self) -> None:
+        voice_tasks: list[asyncio.Task[None]] = []
         try:
-            voice_task: asyncio.Task[None] | None = None
             await self.start()
             if self.voice_port is not None:
-                voice_task = asyncio.create_task(self._handle_voice_packets())
+                voice_tasks = [
+                    asyncio.create_task(self._run_voice_listener()),
+                    asyncio.create_task(self._handle_voice_packets()),
+                    asyncio.create_task(self._cleanup_voice_bridges()),
+                ]
             await self.proxy_server.serve_forever()
         finally:
-            if voice_task is not None:
-                voice_task.cancel()
+            for task in voice_tasks:
+                task.cancel()
+            for task in voice_tasks:
                 with suppress(asyncio.CancelledError):
-                    await voice_task
+                    await task
 
     def __repr__(self) -> str:
         return f"MCProxy('{self.name}')"
