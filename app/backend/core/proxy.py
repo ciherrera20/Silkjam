@@ -138,6 +138,7 @@ class MCProxy(BaseUnit):
 
         # player UUID -> { session ID -> (connection time, profile, backend, TCP peer IP) }
         self.player_sessions: dict[uuid.UUID, dict[int, PlayerSession]] = {}
+        self.player_session_tasks: set[asyncio.Task[None]] = set()
         self.voice_bridges: dict[tuple[uuid.UUID, MCBackend], VoiceBridge] = {}
         self.voice_packet_queue: asyncio.Queue[VoicePacket] = asyncio.Queue(
             maxsize=VOICE_PACKET_QUEUE_SIZE
@@ -171,6 +172,10 @@ class MCProxy(BaseUnit):
 
     async def _stop(self, *args: Any) -> None:
         self.log.info("Stopping proxy server")
+        for task in self.player_session_tasks:
+            task.cancel()
+        if self.player_session_tasks:
+            await asyncio.gather(*self.player_session_tasks, return_exceptions=True)
         self._close_all_voice_bridges("proxy stopped")
         if self.voice_transport is not None:
             self.voice_transport.close()
@@ -477,7 +482,7 @@ class MCProxy(BaseUnit):
             if player_joining:
                 # Read login start before forwarding to backend
                 backend.incr_online_players()
-                track_player_session_task = None
+                track_player_session_task: asyncio.Task[None] | None = None
                 if login_start := await self._read_login_start(
                     packet_reader, handshake.protocol_version, conn_logger
                 ):
@@ -486,6 +491,8 @@ class MCProxy(BaseUnit):
                             id(object()), login_start, backend, client_ip, conn_logger
                         )
                     )
+                    self.player_session_tasks.add(track_player_session_task)
+                    track_player_session_task.add_done_callback(self.player_session_tasks.discard)
                     initial_data += packet_writer.encode_login_start_packet(
                         login_start.username,
                         login_start.player_id,
@@ -499,41 +506,52 @@ class MCProxy(BaseUnit):
                     )
 
             initial_data += packet_reader.unparsed.tobytes()
-            try:
+            async def forward(
+                initial_data: bytes,
+                src_reader: asyncio.StreamReader,
+                dst_writer: asyncio.StreamWriter,
+                direction_msg: str,
+            ) -> None:
+                if len(initial_data) > 0:
+                    dst_writer.write(initial_data)
+                    await dst_writer.drain()
+                while data := await src_reader.read(MCProxy.BUFFER_SIZE):
+                    dst_writer.write(data)
+                    await dst_writer.drain()
+                if dst_writer.can_write_eof():
+                    dst_writer.write_eof()
+                    await dst_writer.drain()
+                conn_logger.debug("[%s] Input closed", direction_msg)
 
-                async def forward(
-                    initial_data: bytes,
-                    src_reader: asyncio.StreamReader,
-                    dst_writer: asyncio.StreamWriter,
-                    direction_msg: str,
-                ) -> None:
-                    try:
-                        if len(initial_data) > 0:
-                            dst_writer.write(initial_data)
-                            await dst_writer.drain()
-                        while data := await src_reader.read(MCProxy.BUFFER_SIZE):
-                            dst_writer.write(data)
-                            await dst_writer.drain()
-                        conn_logger.debug("[%s] Connection closed", direction_msg)
-                    finally:
-                        dst_writer.close()
-
-                await asyncio.gather(
+            forward_tasks = (
+                asyncio.create_task(
                     forward(
                         initial_data,
                         packet_reader.reader,
                         backend_writer,
                         f"client -> {backend.name}",
-                    ),  # client -> proxy -> backend
+                    )
+                ),
+                asyncio.create_task(
                     forward(
                         b"", backend_reader, packet_writer.writer, f"{backend.name} -> client"
-                    ),  # backend -> proxy -> client
+                    )
+                ),
+            )
+            try:
+                done, pending = await asyncio.wait(
+                    forward_tasks, return_when=asyncio.FIRST_EXCEPTION
                 )
+                for task in done:
+                    task.result()
+            except (ConnectionError, RuntimeError) as err:
+                conn_logger.debug("Connection closed while forwarding to %s: %s", backend.name, err)
             except Exception as err:
                 conn_logger.exception("Exception caught while forwarding to backend: %s", err)
             finally:
-                backend_writer.close()
-                await backend_writer.wait_closed()
+                for task in forward_tasks:
+                    task.cancel()
+                await asyncio.gather(*forward_tasks, return_exceptions=True)
 
                 if player_joining:
                     backend.decr_online_players()
@@ -541,6 +559,10 @@ class MCProxy(BaseUnit):
                         track_player_session_task.cancel()
                         with suppress(asyncio.CancelledError):
                             await track_player_session_task
+
+                backend_writer.close()
+                with suppress(OSError, RuntimeError):
+                    await backend_writer.wait_closed()
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -627,7 +649,8 @@ class MCProxy(BaseUnit):
             conn_logger.exception("Exception caught while handling client: %s", err)
         finally:
             writer.close()
-            await writer.wait_closed()
+            with suppress(OSError, RuntimeError):
+                await writer.wait_closed()
 
     async def _get_or_create_voice_bridge(
         self, player_id: uuid.UUID, addr: tuple[str | Any, int]
